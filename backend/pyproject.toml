@@ -1,0 +1,211 @@
+[project]
+name = "tradewatch"
+version = "0.1.0"
+description = "Market intelligence and paper-trading platform — backend services"
+readme = "README.md"
+requires-python = ">=3.13,<3.15"
+license = { text = "MIT" }
+
+# Phase 0 dependencies only. Each phase adds what it needs, with a justification in the
+# pull request (see DEVELOPMENT_PLAN.md "Definition of Done"). Database, Kafka, Redis and
+# ML dependencies are deliberately absent until the phase that uses them.
+dependencies = [
+    "alembic>=1.16",
+    "asyncpg>=0.30",
+    "fastapi>=0.118",
+    "httpx2>=2.13",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.11",
+    "sqlalchemy[asyncio]>=2.0",
+    "structlog>=25.4",
+    "tzdata>=2026.4",
+    "uvicorn[standard]>=0.38",
+    "websockets>=15",
+]
+
+[project.scripts]
+tradewatch-api = "tradewatch.api.__main__:main"
+tradewatch-ingest = "tradewatch.workers.ingestion:main"
+tradewatch-pipeline = "tradewatch.workers.pipeline:main"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.0",
+    "import-linter>=2.3",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.2",
+    "pytest-cov>=7.0",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tradewatch"]
+
+
+# ---------------------------------------------------------------------------
+# Ruff — linting and formatting (replaces black, isort, flake8)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez — naive datetimes are a real bug class here
+    "T20",    # flake8-print — logging, not print
+    "SIM",    # flake8-simplify
+    "PTH",    # flake8-use-pathlib
+    "RUF",    # ruff-specific
+    "ASYNC",  # flake8-async
+    "S",      # bandit — security lint
+]
+ignore = [
+    "S101",  # assert: pytest uses it, and it is fine in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S105",  # hardcoded password string — test fixtures
+    "S106",  # hardcoded password argument — test fixtures
+]
+"alembic/versions/**" = [
+    # Migrations are generated. Reformatting the DDL they emit would make them diverge
+    # from what autogenerate produces, and reviewing a migration means reading the SQL,
+    # not admiring its wrapping.
+    "E501",
+]
+
+[tool.ruff.lint.flake8-builtins]
+builtins-allowed-modules = ["logging"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tradewatch"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+
+# ---------------------------------------------------------------------------
+# mypy — strict on the packages that carry the domain rules
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+mypy_path = ["src", "."]
+explicit_package_bases = true
+files = ["src/tradewatch", "tests"]
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+# Tests are checked, but without requiring full annotations on every fixture.
+module = "tests.*"
+disallow_untyped_defs = false
+
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    # Live provider tests are opt-in. `pytest` must never reach the network by accident,
+    # and CI must never depend on a third party's uptime. An explicit `-m provider` on the
+    # command line overrides this, because the last -m wins.
+    "-m", "not provider",
+]
+markers = [
+    "unit: pure, no I/O, no containers (must stay fast)",
+    "integration: requires real infrastructure (PostgreSQL, Redis, Kafka)",
+    "api: exercises the HTTP surface in-process",
+    "e2e: full stack through a browser",
+    "provider: talks to a real market data provider; needs credentials, skipped otherwise",
+    "slow: anything that should not run on every save",
+]
+asyncio_mode = "auto"
+# One event loop for the whole session. The database engine is session-scoped — building
+# the schema per test would be slow and pointless — and an engine created in one loop
+# cannot be used from another.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+# Warnings are errors: a DeprecationWarning is a scheduled breakage, and finding it in CI
+# is cheaper than finding it on an upgrade. Third-party warnings we cannot fix are ignored
+# one at a time, with the reason, rather than by relaxing the rule.
+filterwarnings = [
+    "error",
+    # starlette 1.6.0 touches a deprecated anyio alias at import time.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["src/tradewatch"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+
+# ---------------------------------------------------------------------------
+# import-linter — enforces the layering that ARCHITECTURE.md assumes
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "tradewatch"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture: domain knows nothing about the outside world"
+type = "layers"
+layers = [
+    "tradewatch.api | tradewatch.workers",
+    "tradewatch.application",
+    "tradewatch.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain is independent of infrastructure"
+type = "forbidden"
+source_modules = ["tradewatch.domain"]
+forbidden_modules = [
+    "tradewatch.infrastructure",
+    "tradewatch.api",
+    "tradewatch.workers",
+]
+
+[[tool.importlinter.contracts]]
+name = "Application depends on ports, not adapters"
+type = "forbidden"
+source_modules = ["tradewatch.application"]
+forbidden_modules = ["tradewatch.infrastructure"]
+
+[[tool.importlinter.contracts]]
+name = "Domain is independent of frameworks"
+type = "forbidden"
+source_modules = ["tradewatch.domain"]
+forbidden_modules = ["fastapi", "sqlalchemy", "redis", "uvicorn"]

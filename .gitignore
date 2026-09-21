@@ -1,5 +1,49 @@
-node_modules/
+# --- Secrets -----------------------------------------------------------------
+# .env holds real credentials. .env.example holds the documented shape, and is committed.
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# --- Node ---------------------------------------------------------------------
+node_modules/
+frontend/dist/
+frontend/coverage/
+*.tsbuildinfo
+npm-debug.log*
+.vite/
+
+# --- Tooling and editors ------------------------------------------------------
 .vscode/
+.idea/
 *.log
+.DS_Store
+Thumbs.db
 .claude/
+
+# --- Local data ---------------------------------------------------------------
+# Benchmark results are committed deliberately (ARCHITECTURE.md §11.3); scratch files
+# and model artifacts are not.
+data/
+*.joblib
+*.pkl
+playwright-report/
+test-results/

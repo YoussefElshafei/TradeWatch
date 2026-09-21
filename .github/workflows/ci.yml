@@ -1,0 +1,265 @@
+name: CI
+
+# Every check that can fail a pull request runs here, and each one is its own job so a
+# failure names itself. Jobs are independent on purpose: a lint failure should not hide a
+# test failure.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes the run it interrupted; there is no value in finishing the old one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.13'
+  NODE_VERSION: '24'
+
+jobs:
+  backend-quality:
+    name: Backend — lint, format, types, layering
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - run: uv sync --all-groups --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check --output-format=github .
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Type check (mypy)
+        run: uv run mypy
+
+      - name: Architecture layering (import-linter)
+        # The domain must not import infrastructure or a framework. Enforcing it here
+        # means the rule in ARCHITECTURE.md is a fact rather than an intention.
+        run: uv run lint-imports
+
+  backend-test:
+    name: Backend — tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - run: uv sync --all-groups --frozen
+
+      - name: Unit and API tests
+        # Integration tests have their own job with a real PostgreSQL service. Splitting
+        # them keeps this job fast and makes a failure name which layer broke.
+        # `provider` is named explicitly because an -m here overrides the one in
+        # pyproject's addopts. CI must never depend on a third party's uptime.
+        run: uv run pytest -m "not integration and not e2e and not provider" --cov --cov-report=xml
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          if-no-files-found: error
+
+  backend-integration:
+    name: Backend — integration tests (real PostgreSQL)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tradewatch
+          POSTGRES_PASSWORD: tradewatch
+          POSTGRES_DB: tradewatch_test
+          TZ: UTC
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tradewatch -d tradewatch_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      # The tests build the schema by running the real migrations, then roll back every
+      # test. ARCHITECTURE.md §11.2: no mocking of the database.
+      TW_TEST_DATABASE_URL: postgresql+asyncpg://tradewatch:tradewatch@localhost:5432/tradewatch_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - run: uv sync --all-groups --frozen
+
+      - name: Integration tests
+        # No skip-if-unavailable here: if PostgreSQL is not reachable in CI that is a
+        # broken pipeline, not a reason to pass quietly.
+        #
+        # This covers migrations too. tests/integration/test_migrations.py builds the
+        # schema from empty, runs upgrade -> downgrade -> upgrade on its own scratch
+        # database, and asserts autogenerate finds no difference between the models and
+        # the migrated schema.
+        run: uv run pytest -m "integration and not provider" 
+
+  backend-startup:
+    name: Backend — starts with the documented configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - run: uv sync --all-groups --frozen
+        working-directory: backend
+
+      - name: Start the API using .env.example and call /health
+        env:
+          # 'ci' rather than the file's 'local', so uvicorn does not start its reloader
+          # and leave a child process behind when this step kills the server.
+          TW_ENV: ci
+        # This is the Phase 0 exit criterion "the application starts without configuration
+        # errors", checked against the file a new developer is told to copy. If
+        # .env.example drifts from the settings model, this job fails.
+        run: |
+          cp .env.example .env
+          cd backend
+          uv run tradewatch-api &
+          API_PID=$!
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health; then
+              echo "API answered on attempt $attempt"
+              kill $API_PID
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become healthy within 30s"
+          kill $API_PID || true
+          exit 1
+
+      - name: Fail fast when required configuration is missing
+        # The other half of the promise: no .env, no silent start.
+        run: |
+          rm -f .env
+          cd backend
+          set +e
+          output=$(uv run tradewatch-api 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "Expected a non-zero exit when configuration is missing"
+            exit 1
+          fi
+          echo "$output" | grep -q "TW_DATABASE_URL" || {
+            echo "Expected the error to name the missing variable"
+            exit 1
+          }
+
+  frontend:
+    name: Frontend — lint, format, types, tests, build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - name: Lint (eslint)
+        run: npm run lint
+
+      - name: Format check (prettier)
+        run: npm run format:check
+
+      - name: Type check (tsc)
+        run: npm run typecheck
+
+      - name: Tests (vitest)
+        run: npm run test:coverage
+
+      - name: Build
+        run: npx vite build
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/lcov.info
+          if-no-files-found: error
+
+  docker:
+    name: Docker — backend image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.backend
+          push: false
+          load: true
+          tags: tradewatch-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Compose file is valid
+        run: docker compose -f docker/docker-compose.yml config --quiet
+
+  # Phase 2 adds Kafka and Redis services to backend-integration.
+  # Phase 5 adds: security (pip-audit, npm audit, secret scanning, Trivy).
+  # Phase 11 adds: e2e (Playwright) and failure-recovery jobs.
+  # Phase 10 adds: a nightly performance workflow, separate from this one.

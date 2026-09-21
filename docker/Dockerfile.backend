@@ -1,0 +1,56 @@
+# TradeWatch backend image.
+#
+# Build context is the repository root:
+#   docker build -f docker/Dockerfile.backend -t tradewatch-api .
+#
+# Two stages so the runtime image carries no build tooling and no dev dependencies.
+
+# ---------------------------------------------------------------------------
+# Stage 1 — resolve and install dependencies
+# ---------------------------------------------------------------------------
+FROM python:3.13-slim AS builder
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /app
+
+# Dependencies first, in their own layer: they change far less often than the source, so
+# an edit to a Python file does not reinstall the world.
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+COPY backend/README.md ./README.md
+COPY backend/src ./src
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime
+# ---------------------------------------------------------------------------
+FROM python:3.13-slim AS runtime
+
+# Run as a non-root user. A container that does not need root should not have it.
+RUN groupadd --system --gid 1001 tradewatch \
+    && useradd --system --uid 1001 --gid tradewatch --create-home tradewatch
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TW_LOG_FORMAT=json
+
+WORKDIR /app
+
+COPY --from=builder --chown=tradewatch:tradewatch /app/.venv ./.venv
+COPY --from=builder --chown=tradewatch:tradewatch /app/src ./src
+
+USER tradewatch
+
+EXPOSE 8000
+
+# The host and port come from configuration; the image does not hard-code where it listens.
+CMD ["tradewatch-api"]

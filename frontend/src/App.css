@@ -1,0 +1,240 @@
+/* Deliberately minimal. The design system is a Phase 1+ concern; this exists so the
+   Phase 0 shell is legible rather than pretty. */
+
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0;
+  background: #fbfbfd;
+  color: #16161a;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #131316;
+    color: #ececed;
+  }
+}
+
+.app {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 2rem 1rem 3rem;
+}
+
+h1 {
+  margin-bottom: 0.25rem;
+  font-size: 1.75rem;
+}
+
+h2 {
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  margin-top: 2rem;
+}
+
+.tagline {
+  margin-top: 0;
+  opacity: 0.7;
+}
+
+.status {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: 0.4rem 1rem;
+  margin: 0;
+}
+
+.status dt {
+  font-weight: 600;
+}
+
+.status dd {
+  margin: 0;
+}
+
+.error {
+  color: #b3261e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error {
+    color: #f2b8b5;
+  }
+}
+
+code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+footer {
+  margin-top: 3rem;
+  font-size: 0.875rem;
+  opacity: 0.6;
+}
+
+/* --- Market view -------------------------------------------------------- */
+/* Deliberately plain. The design system belongs to the real dashboard; this only has to be
+   legible enough to show that the data arrived. */
+
+:root {
+  --accent: #2563eb;
+  --grid: #e2e8f0;
+  --panel: #f1f5f9;
+  --panel-error: #fee2e2;
+  --muted: #64748b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #60a5fa;
+    --grid: #334155;
+    --panel: #1e293b;
+    --panel-error: #4c1d1d;
+    --muted: #94a3b8;
+  }
+}
+
+.market {
+  margin-top: 1.5rem;
+}
+
+.market-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.market-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 1;
+}
+
+.symbol-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.symbol-selector select {
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid var(--grid);
+  background: transparent;
+  color: inherit;
+}
+
+.quote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  background: var(--panel);
+  border-radius: 8px;
+}
+
+.quote dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.quote dd {
+  margin: 0.15rem 0 0;
+  font-size: 1.125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel {
+  padding: 1rem;
+  margin: 1rem 0;
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.panel-error {
+  background: var(--panel-error);
+}
+
+.panel-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.panel-detail {
+  margin: 0.35rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.panel button {
+  margin-top: 0.75rem;
+  padding: 0.35rem 0.75rem;
+  font: inherit;
+  border-radius: 6px;
+  border: 1px solid var(--grid);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chart {
+  margin: 1rem 0 0;
+}
+
+/* The chart has a fixed pixel width so it can be rendered and asserted on in jsdom; this
+   keeps a narrow screen scrolling rather than clipping. */
+.chart-scroll {
+  overflow-x: auto;
+}
+
+.chart figcaption {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.chart-tooltip {
+  padding: 0.5rem 0.75rem;
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+}
+
+.chart-tooltip dl {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0.1rem 0.75rem;
+  margin: 0.35rem 0 0;
+}
+
+.chart-tooltip dt {
+  color: var(--muted);
+}
+
+.chart-tooltip dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}

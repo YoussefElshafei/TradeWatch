@@ -1,0 +1,91 @@
+# TradeWatch local development stack.
+#
+#   docker compose -f docker/docker-compose.yml up -d           # infrastructure only
+#   docker compose -f docker/docker-compose.yml --profile app up  # + the API in a container
+#
+# Phase 0 runs PostgreSQL and Redis. Kafka joins in Phase 2, when there is something that
+# needs a durable log (ADR-0001) — adding a broker now would be decoration.
+#
+# The API and the frontend normally run on the host during development, because the
+# reload loop is faster and the debugger just works. The `app` profile exists for
+# verifying that the container image itself is correct.
+
+name: tradewatch
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: tradewatch-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tradewatch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tradewatch}
+      POSTGRES_DB: ${POSTGRES_DB:-tradewatch}
+      # Deterministic ordering and timestamps, so a query result does not depend on the
+      # host's locale.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      # Bound to loopback: this database has development credentials and must not be
+      # reachable from the network.
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Creates the tradewatch_test database on first start, so integration tests have
+      # somewhere to run that is never the application database.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-tradewatch} -d ${POSTGRES_DB:-tradewatch}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    container_name: tradewatch-redis
+    # No persistence: Redis is a cache and a fan-out bus here, never the system of record
+    # (ADR-0003). Losing it must cost nothing but a cold cache — and starting it this way
+    # means that assumption is tested every time the stack restarts.
+    command: ['redis-server', '--save', '', '--appendonly', 'no', '--maxmemory-policy', 'allkeys-lru']
+    ports:
+      - '127.0.0.1:6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    profiles: ['app']
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: tradewatch-api
+    environment:
+      TW_ENV: local
+      TW_LOG_FORMAT: json
+      TW_API_HOST: 0.0.0.0
+      TW_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-tradewatch}:${POSTGRES_PASSWORD:-tradewatch}@postgres:5432/${POSTGRES_DB:-tradewatch}
+      TW_REDIS_URL: redis://redis:6379/0
+      TW_JWT_SECRET: ${TW_JWT_SECRET:-container-local-development-secret}
+    ports:
+      - '127.0.0.1:8000:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+    name: tradewatch-postgres-data

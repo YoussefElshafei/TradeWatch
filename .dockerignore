@@ -1,0 +1,24 @@
+# Keep the build context small and free of anything secret.
+.git/
+.github/
+.venv/
+venv/
+node_modules/
+frontend/dist/
+frontend/coverage/
+**/__pycache__/
+**/*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.env
+.env.*
+!.env.example
+*.log
+ADR/
+docs/
+benchmarks/
+*.md
+!backend/README.md
