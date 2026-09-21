@@ -196,6 +196,45 @@ class InMemoryEventBus:
             self._queue.task_done()
             yield event
 
+    async def batches(
+        self,
+        *,
+        max_size: int | None = None,
+        poll_timeout: float = 0.05,
+    ) -> AsyncIterator[Sequence[MarketEvent]]:
+        """Yield batches of queued events, implementing ``EventBatchConsumer``.
+
+        Added in Phase 2 so
+        :class:`~tradewatch.application.processing.consumer.MarketDataConsumerService` —
+        the class that decides when an offset is safe to commit — can be unit tested
+        without a broker. That is the reason the port exists in the first place: the
+        acknowledgement logic is the part most worth testing and the part a real Kafka
+        makes slowest to test.
+
+        Waits up to ``poll_timeout`` for the first event and then takes whatever else is
+        already queued, which is the same shape as a Kafka poll: one wait, then a batch.
+        An empty batch is yielded on timeout rather than swallowed, exactly as the real
+        adapter does, so a consumer written against this behaves the same against Kafka.
+        """
+        limit = max_size or self._max_size
+        while True:
+            batch: list[MarketEvent] = []
+            try:
+                async with asyncio.timeout(poll_timeout):
+                    batch.append(await self._queue.get())
+                self._consumed += 1
+                self._queue.task_done()
+            except TimeoutError:
+                yield []
+                continue
+
+            while len(batch) < limit and not self._queue.empty():
+                batch.append(self._queue.get_nowait())
+                self._consumed += 1
+                self._queue.task_done()
+
+            yield batch
+
     async def commit(self) -> None:
         """No offsets to commit in process. Kafka's adapter is where this matters."""
         return None

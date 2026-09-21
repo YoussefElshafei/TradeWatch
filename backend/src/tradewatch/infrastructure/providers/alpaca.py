@@ -18,13 +18,19 @@ Free tier notes, which shape the implementation:
   a simulation; worth knowing before quoting any number from it.
 * One concurrent WebSocket connection. A second connection silently displaces the first,
   so the ingestion service must run as a singleton.
-* Trades and quotes multiplex over one socket, which is why both streams share a connection
-  and a subscription here.
+* Trades and quotes multiplex over one socket. The ingestion worker runs
+  :meth:`AlpacaProvider.stream_trades` and :meth:`AlpacaProvider.stream_quotes` as two
+  concurrent tasks, so this adapter **must** fan both out from a single connection —
+  see :class:`_StreamMultiplexer`. An earlier version opened a socket per call, which on
+  the free tier means the second connection displaces the first and one of the two streams
+  silently stops. It was not caught by the unit tests because each drove one stream in
+  isolation, which is exactly the shape of test that cannot see this bug.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -99,6 +105,42 @@ _CAPABILITIES = ProviderCapabilities(
 #: is roughly 8,000 rows, well inside this.
 _MAX_PAGES: Final = 200
 
+_TRADES: Final = "trades"
+_QUOTES: Final = "quotes"
+
+#: Pushed to a subscriber when the socket closed cleanly. Distinct from an exception:
+#: the generator *ends*, and `reconnecting` turns "the stream finished" into a reopen —
+#: which is where that decision has always lived (see the port's docstring).
+_END: Final = object()
+
+#: Per-subscriber buffer. Generous, because the only consumer is the ingestion service,
+#: which publishes to Kafka and returns. If it ever fills, something downstream has stopped.
+_SUBSCRIBER_BUFFER: Final = 10_000
+
+#: Exception names that mean "the peer closed the socket normally". Matched by name so this
+#: module does not import `websockets` just to catch two classes, which would undo the lazy
+#: import that keeps the synthetic provider free of the dependency.
+_CLEAN_CLOSE_NAMES: Final = frozenset(
+    {"ConnectionClosedOK", "ConnectionClosed", "StopAsyncIteration"}
+)
+
+
+class _StreamClosedError(Exception):
+    """Internal: the socket closed cleanly. Converted to a reconnectable error by the reader."""
+
+
+async def _close_connection(connection: Any) -> None:
+    """Close a socket whether its ``close`` is a coroutine function or not."""
+    closer = getattr(connection, "close", None)
+    if closer is None:
+        return
+    try:
+        result = closer()
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception as error:
+        log.debug("alpaca.close_failed", error=str(error), error_type=type(error).__name__)
+
 
 class AlpacaSettings:
     """Connection details, kept out of the adapter so tests can point it anywhere."""
@@ -169,6 +211,9 @@ class AlpacaProvider:
         self._limiter = limiter or TokenBucket(rate_per_minute=settings.rate_limit_per_minute)
         self._sleep = sleep or asyncio.sleep
         self._closed = False
+        #: One socket, fanned out to the trade and quote subscribers. See the module
+        #: docstring: the free tier permits exactly one connection.
+        self._multiplexer = _StreamMultiplexer(self)
 
     # --- port surface ------------------------------------------------------
 
@@ -182,6 +227,7 @@ class AlpacaProvider:
 
     async def aclose(self) -> None:
         self._closed = True
+        await self._multiplexer.aclose()
         if self._owns_client:
             await self._client.aclose()
 
@@ -276,19 +322,25 @@ class AlpacaProvider:
         return bars
 
     async def fetch_latest_price(self, symbol: str) -> PriceSnapshot | None:
-        """The most recent trade, enriched with the book when the quote is available."""
+        """The most recent trade, with the book alongside it.
+
+        Uses ``/v2/stocks/{symbol}/snapshot`` rather than ``/trades/latest``. The latter
+        returns only ``{"symbol", "trade"}`` — it has no ``quote`` key at all — so the
+        book-enrichment branch that used to read one here could never fire, and
+        :attr:`PriceSnapshot.has_book` was permanently False for a reason no caller could
+        see. The snapshot endpoint returns ``latestTrade`` and ``latestQuote`` together,
+        which is what this method has always claimed to return.
+        """
         wanted = normalize_symbol(symbol, provider=PROVIDER_NAME)
         payload = await self._get(
-            f"{self._settings.data_base_url}/v2/stocks/{wanted}/trades/latest",
+            f"{self._settings.data_base_url}/v2/stocks/{wanted}/snapshot",
             params={"feed": self._settings.feed},
             description="fetch_latest_price",
         )
         if not isinstance(payload, dict):
-            raise ProviderDataError(
-                "latest trade response is not an object", provider=PROVIDER_NAME
-            )
+            raise ProviderDataError("snapshot response is not an object", provider=PROVIDER_NAME)
 
-        trade = payload.get("trade")
+        trade = payload.get("latestTrade")
         if not isinstance(trade, dict):
             # A symbol that has not traded has no last price. A real answer, not an error.
             return None
@@ -307,7 +359,7 @@ class AlpacaProvider:
         )
 
         bid = ask = None
-        quote = payload.get("quote")
+        quote = payload.get("latestQuote")
         if isinstance(quote, dict):
             bid = parse_decimal(
                 quote.get("bp", 0), field="bp", provider=PROVIDER_NAME, allow_zero=True
@@ -329,12 +381,12 @@ class AlpacaProvider:
         )
 
     async def stream_trades(self, symbols: Sequence[str]) -> AsyncIterator[TradeEvent]:
-        async for event in self._stream(symbols, trades=True, quotes=False):
+        async for event in self._multiplexer.stream(symbols, kind=_TRADES):
             if isinstance(event, TradeEvent):
                 yield event
 
     async def stream_quotes(self, symbols: Sequence[str]) -> AsyncIterator[QuoteEvent]:
-        async for event in self._stream(symbols, trades=False, quotes=True):
+        async for event in self._multiplexer.stream(symbols, kind=_QUOTES):
             if isinstance(event, QuoteEvent):
                 yield event
 
@@ -514,55 +566,50 @@ class AlpacaProvider:
 
     # --- WebSocket ---------------------------------------------------------
 
-    async def _stream(
-        self, symbols: Sequence[str], *, trades: bool, quotes: bool
-    ) -> AsyncIterator[TradeEvent | QuoteEvent]:
-        """One authenticated, subscribed WebSocket session.
+    async def _open_session(self, symbols: Sequence[str], *, trades: bool, quotes: bool) -> Any:
+        """Open, authenticate and subscribe one WebSocket session.
 
-        Yields until the socket closes or fails. Reconnection is the caller's job, through
+        Reconnection is the caller's job, through
         :func:`~tradewatch.infrastructure.providers.resilience.reconnecting` — one retry
         policy for the whole system rather than one per adapter.
         """
         if self._closed:
             raise ProviderConnectionError("provider is closed", provider=PROVIDER_NAME)
-
-        wanted = [normalize_symbol(symbol, provider=PROVIDER_NAME) for symbol in symbols]
-        if not wanted:
+        if not symbols:
             raise ProviderRequestError("no symbols to subscribe to", provider=PROVIDER_NAME)
 
         connection = await self._open_socket()
         try:
             await self._authenticate(connection)
-            await self._subscribe(connection, wanted, trades=trades, quotes=quotes)
+            await self._subscribe(connection, symbols, trades=trades, quotes=quotes)
+        except BaseException:
+            await _close_connection(connection)
+            raise
+        return connection
 
-            # The read loop is wrapped because the port promises that only ProviderError
-            # subclasses cross this boundary. A raw ConnectionResetError escaping here
-            # would reach a retry policy that cannot classify it, and so would not retry
-            # a failure that is entirely retryable.
-            while True:
-                try:
-                    frame = await anext(aiter(connection))
-                except StopAsyncIteration:
-                    break
-                except asyncio.CancelledError:
-                    raise
-                except ProviderError:
-                    raise
-                except Exception as error:
-                    raise ProviderConnectionError(
-                        f"stream read failed: {type(error).__name__}", provider=PROVIDER_NAME
-                    ) from error
+    async def _read_frame(self, connection: Any) -> Any:
+        """One frame, with every failure mapped to a ProviderError.
 
-                for message in self._decode_frame(frame):
-                    event = self._handle_message(message)
-                    if event is not None:
-                        yield event
-        finally:
-            closer = getattr(connection, "close", None)
-            if closer is not None:
-                result = closer()
-                if asyncio.iscoroutine(result):
-                    await result
+        The port promises that only ``ProviderError`` subclasses cross this boundary. A raw
+        ``ConnectionResetError`` escaping here would reach a retry policy that cannot
+        classify it, and so would not retry a failure that is entirely retryable.
+
+        Reads through ``recv()`` rather than ``anext(aiter(connection))``. The latter built
+        a fresh async generator for every single message and abandoned it, which leaks a
+        generator per tick and, on a library whose ``__aiter__`` buffers, can lose messages.
+        """
+        try:
+            return await connection.recv()
+        except asyncio.CancelledError:
+            raise
+        except ProviderError:
+            raise
+        except Exception as error:
+            if type(error).__name__ in _CLEAN_CLOSE_NAMES:
+                raise _StreamClosedError from error
+            raise ProviderConnectionError(
+                f"stream read failed: {type(error).__name__}", provider=PROVIDER_NAME
+            ) from error
 
     async def _open_socket(self) -> Any:
         if self._connect is not None:
@@ -602,18 +649,37 @@ class AlpacaProvider:
                 return
         raise ProviderAuthError("alpaca did not confirm authentication", provider=PROVIDER_NAME)
 
-    async def _subscribe(
+    async def _send_subscription(
         self, connection: Any, symbols: Sequence[str], *, trades: bool, quotes: bool
     ) -> None:
+        """Ask for a subscription without waiting for the confirmation.
+
+        Used when attaching a second subscriber to a socket whose reader task is already
+        running. Reading the acknowledgement here would mean two coroutines calling
+        ``recv()`` on one connection, which is undefined behaviour and, in practice, a
+        frame delivered to whichever happened to be waiting. The reader already discards
+        ``subscription`` control messages and already raises on ``error`` ones, so the
+        confirmation and any rejection both arrive through the normal path.
+        """
         request: dict[str, Any] = {"action": "subscribe"}
         if trades:
             request["trades"] = list(symbols)
         if quotes:
             request["quotes"] = list(symbols)
         await self._send(connection, request)
+        log.info("alpaca.subscribed", symbols=len(symbols), trades=trades, quotes=quotes)
+
+    async def _subscribe(
+        self, connection: Any, symbols: Sequence[str], *, trades: bool, quotes: bool
+    ) -> None:
+        """Subscribe and wait for the confirmation.
+
+        Only safe before the reader task exists — during the initial handshake — which is
+        the one moment nothing else is reading the socket.
+        """
+        await self._send_subscription(connection, symbols, trades=trades, quotes=quotes)
         for message in self._decode_frame(await self._receive(connection)):
             self._check_error(message)
-        log.info("alpaca.subscribed", symbols=len(symbols), trades=trades, quotes=quotes)
 
     async def _send(self, connection: Any, payload: Mapping[str, Any]) -> None:
         try:
@@ -693,3 +759,214 @@ class AlpacaProvider:
             return None
         log.debug("alpaca.unhandled_message", message_type=kind)
         return None
+
+
+class _StreamMultiplexer:
+    """One Alpaca socket, fanned out to the trade and quote subscribers.
+
+    **Why this exists.** The port has two streaming methods and the ingestion worker calls
+    both, concurrently, as separate tasks. Alpaca's free tier permits one concurrent
+    connection and silently displaces the older one when a second appears. So a naive
+    adapter — open a socket per call — produces a system that authenticates twice, streams
+    for a moment, and then delivers only quotes, with no error anywhere. The failure looks
+    like "trades stopped arriving", which is a long way from "you opened two sockets".
+
+    So: the first subscriber opens and authenticates the connection; the second attaches to
+    it and adds its subscription. A single reader task decodes frames and routes each event
+    to the subscribers that asked for that kind. When the last subscriber goes away, the
+    socket closes.
+
+    **Failures reach every subscriber.** When the reader dies, the error is handed to all of
+    them, so each one's ``reconnecting`` wrapper sees a `ProviderError` and backs off. The
+    first to come back re-opens the socket; the rest attach to it. Without this, a dropped
+    connection would wake one stream and strand the other on an empty queue forever.
+
+    **Backpressure is shed, not propagated.** Each subscriber has a bounded buffer. Blocking
+    the reader would stall the socket and eventually have Alpaca disconnect us, so a full
+    buffer drops its oldest event and counts it — the same shedding posture as failure F4,
+    and visible in `dropped` rather than silent.
+    """
+
+    def __init__(self, owner: AlpacaProvider) -> None:
+        self._owner = owner
+        self._lock = asyncio.Lock()
+        self._connection: Any = None
+        self._reader: asyncio.Task[None] | None = None
+        self._subscribers: dict[str, asyncio.Queue[Any]] = {}
+        self._symbols: list[str] = []
+        self.dropped = 0
+
+    @property
+    def connected(self) -> bool:
+        return self._connection is not None
+
+    async def stream(
+        self, symbols: Sequence[str], *, kind: str
+    ) -> AsyncIterator[TradeEvent | QuoteEvent]:
+        """Yield events of one ``kind`` until the socket fails or the caller stops."""
+        queue = await self._attach(symbols, kind=kind)
+        try:
+            while True:
+                item = await queue.get()
+                if item is _END:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            await self._detach(kind)
+
+    # --- membership --------------------------------------------------------
+
+    async def _attach(self, symbols: Sequence[str], *, kind: str) -> asyncio.Queue[Any]:
+        wanted = [normalize_symbol(symbol, provider=PROVIDER_NAME) for symbol in symbols]
+        if not wanted:
+            raise ProviderRequestError("no symbols to subscribe to", provider=PROVIDER_NAME)
+
+        async with self._lock:
+            if kind in self._subscribers:
+                raise ProviderRequestError(
+                    f"{kind} are already being streamed by this provider", provider=PROVIDER_NAME
+                )
+
+            queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=_SUBSCRIBER_BUFFER)
+
+            if self._connection is not None and self._reader is not None and self._reader.done():
+                # The reader finished, so the socket is either closed or unusable. The
+                # subscribers that were attached already have their error or end marker
+                # queued; this one must not be joined to a session nothing is reading, which
+                # would leave it waiting on an empty queue forever.
+                log.info("alpaca.session_expired", detail="reopening for a new subscriber")
+                await self._teardown_locked()
+
+            if self._connection is None:
+                self._connection = await self._owner._open_session(
+                    wanted, trades=kind == _TRADES, quotes=kind == _QUOTES
+                )
+                self._symbols = list(wanted)
+            else:
+                # Attach to the existing session rather than opening a second one. Send
+                # only — the reader owns `recv()` from here on.
+                await self._owner._send_subscription(
+                    self._connection,
+                    wanted,
+                    trades=kind == _TRADES,
+                    quotes=kind == _QUOTES,
+                )
+
+            self._subscribers[kind] = queue
+            if self._reader is None or self._reader.done():
+                self._reader = asyncio.create_task(self._read_loop(), name="alpaca-stream-reader")
+            return queue
+
+    async def _detach(self, kind: str) -> None:
+        async with self._lock:
+            self._subscribers.pop(kind, None)
+            if self._subscribers:
+                return
+            await self._shutdown_locked()
+
+    async def aclose(self) -> None:
+        async with self._lock:
+            self._subscribers.clear()
+            await self._shutdown_locked()
+
+    async def _shutdown_locked(self) -> None:
+        await self._teardown_locked()
+
+    async def _teardown_locked(self) -> None:
+        """Stop the reader and close the socket, leaving subscriber queues alone.
+
+        Their contents — an error, or the end marker — are what tells each subscriber what
+        happened, so they are deliberately not discarded here.
+        """
+        reader, self._reader = self._reader, None
+        if reader is not None and not reader.done():
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
+
+        connection, self._connection = self._connection, None
+        self._symbols = []
+        if connection is not None:
+            await _close_connection(connection)
+
+    # --- the reader --------------------------------------------------------
+
+    async def _read_loop(self) -> None:
+        """Decode frames and route events, until the socket fails or this task is cancelled."""
+        connection = self._connection
+        try:
+            while True:
+                if connection is None:
+                    raise ProviderConnectionError("socket went away", provider=PROVIDER_NAME)
+                try:
+                    frame = await self._owner._read_frame(connection)
+                except _StreamClosedError:
+                    # A clean close ends every subscriber's generator. `reconnecting` is what
+                    # decides that a finished stream should be reopened, and keeping that
+                    # decision there means one reconnect policy rather than one per adapter.
+                    self._end_subscribers()
+                    return
+
+                for message in self._owner._decode_frame(frame):
+                    try:
+                        event = self._owner._handle_message(message)
+                    except ProviderDataError as error:
+                        # One bad tick must not end the session (failure F3). The ingestion
+                        # service counts these; here it is enough not to die.
+                        log.warning("alpaca.malformed_message", error=str(error))
+                        continue
+                    if event is not None:
+                        self._dispatch(event)
+        except asyncio.CancelledError:
+            raise
+        except ProviderError as error:
+            self._fail_subscribers(error)
+        except Exception as error:
+            self._fail_subscribers(
+                ProviderConnectionError(
+                    f"stream reader failed: {type(error).__name__}", provider=PROVIDER_NAME
+                )
+            )
+
+    def _dispatch(self, event: TradeEvent | QuoteEvent) -> None:
+        kind = _TRADES if isinstance(event, TradeEvent) else _QUOTES
+        queue = self._subscribers.get(kind)
+        if queue is None:
+            # Nobody asked for this kind. Alpaca sends what was subscribed, so this means a
+            # subscriber detached while frames were still in flight.
+            return
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+            self.dropped += 1
+            log.warning(
+                "alpaca.subscriber_buffer_full",
+                kind=kind,
+                buffer=_SUBSCRIBER_BUFFER,
+                total_dropped=self.dropped,
+            )
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(event)
+
+    def _end_subscribers(self) -> None:
+        """Tell every subscriber the stream finished, without inventing an error."""
+        log.info("alpaca.stream_ended", subscribers=len(self._subscribers))
+        for queue in self._subscribers.values():
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(_END)
+
+    def _fail_subscribers(self, error: ProviderError) -> None:
+        """Hand the failure to every subscriber so each one reconnects."""
+        log.warning(
+            "alpaca.stream_failed",
+            error=str(error),
+            error_type=type(error).__name__,
+            subscribers=len(self._subscribers),
+        )
+        for queue in self._subscribers.values():
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(error)

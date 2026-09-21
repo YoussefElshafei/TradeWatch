@@ -24,7 +24,7 @@ How market data gets into TradeWatch, and what happens when it goes wrong.
   └────────┬─────────────────────────────────┘
            │  EventPublisher port
   ┌────────▼─────────────────────────────────┐
-  │ InMemoryEventBus  →  Kafka in Phase 2    │
+  │ KafkaEventPublisher → tw.market.*.v1     │
   └──────────────────────────────────────────┘
 ```
 
@@ -148,8 +148,13 @@ uv run tradewatch-ingest        # from backend/
 ```
 
 With the default configuration it streams synthetic trades and quotes for `TW_SYMBOLS` into
-an in-process bus, reporting stats on shutdown. Phase 2 swaps the bus for Kafka; nothing
-else in the worker changes, which is the point of the port.
+an in-process bus that nothing drains, reporting stats on shutdown. It is useful for watching
+normalization and useless for getting data anywhere.
+
+`tradewatch-producer` is the real entry point: the same ingestion service, publishing to
+Kafka. Swapping the bus for the broker changed nothing in `IngestionService` and nothing in
+this worker's supervision — which is the point of the port, and was the Phase 1 claim
+(ADR-0001). See [PIPELINE.md](PIPELINE.md).
 
 ---
 
@@ -198,6 +203,5 @@ await capture_stream(provider.stream_trades(["AAPL"]), "tests/fixtures/alpaca-aa
   singleton. That constrains Phase 12's deployment topology.
 - **Bars are not yet aggregated from trades.** The stateful aggregator is Phase 3; today
   bars come from the provider's own historical endpoint.
-- **Ingested events are not yet written to the database by a worker.** The service publishes
-  to the bus; the consumer that persists them is the Phase 2 processor. The integration
-  tests do the mapping themselves to prove the two halves fit.
+- **`tradewatch-ingest` publishes to a bus nothing drains.** That is what it is for. The
+  path that reaches the database is `tradewatch-producer` → Kafka → `tradewatch-consumer`.

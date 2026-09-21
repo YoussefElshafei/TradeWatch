@@ -17,6 +17,7 @@ missing variable per run is a bad way to spend an afternoon.
 
 from __future__ import annotations
 
+import datetime as dt
 from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
@@ -32,6 +33,8 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from tradewatch.domain.enums import BarInterval
 
 ENV_PREFIX: Final = "TW_"
 
@@ -149,7 +152,17 @@ class MarketSettings(_Group):
     market_session_close: str = "16:00"
     base_currency: str = "USD"
     bar_intervals: CsvList = Field(default=["1m", "5m", "1h", "1d"])
+    #: How long after a bar closes a late trade may still revise it (failure F11). Past
+    #: this the bar is sealed and a straggler is counted and dropped — a bar that can be
+    #: revised forever is a bar nothing downstream can ever act on.
     late_data_grace_seconds: int = Field(default=5, ge=0, le=3600)
+    #: How often the aggregator derives 5m/1h/1d bars from stored 1m bars. Rolling up on
+    #: every flush would re-read the same minutes dozens of times a minute for a result
+    #: that only changes when a bar closes.
+    rollup_interval_seconds: int = Field(default=60, gt=0)
+    #: How far back each rollup pass reaches. Must comfortably exceed the largest interval
+    #: in `bar_intervals`, or the current daily bar is never recomputed as minutes arrive.
+    rollup_lookback_minutes: int = Field(default=2880, gt=0)
 
     @field_validator("symbols")
     @classmethod
@@ -157,6 +170,39 @@ class MarketSettings(_Group):
         if not value:
             raise ValueError("at least one symbol is required")
         return [symbol.upper() for symbol in value]
+
+    @model_validator(mode="after")
+    def _rollup_window_covers_the_intervals(self) -> Self:
+        """A lookback shorter than the coarsest bar can never complete one.
+
+        Silent when wrong: daily bars would simply be missing their most recent entry, and
+        nothing would say why.
+        """
+        try:
+            coarsest = max(BarInterval(value).duration for value in self.bar_intervals)
+        except ValueError:
+            # An unknown interval string; the field validator below reports it properly.
+            return self
+        if dt.timedelta(minutes=self.rollup_lookback_minutes) < coarsest:
+            raise ValueError(
+                "TW_ROLLUP_LOOKBACK_MINUTES must be at least as long as the largest "
+                "interval in TW_BAR_INTERVALS"
+            )
+        return self
+
+    @field_validator("bar_intervals")
+    @classmethod
+    def _known_intervals(cls, value: list[str]) -> list[str]:
+        """Fail at startup rather than at the first rollup."""
+        allowed = {member.value for member in BarInterval}
+        unknown = [item for item in value if item not in allowed]
+        if unknown:
+            raise ValueError(f"unknown bar interval(s) {unknown}; allowed: {sorted(allowed)}")
+        if BarInterval.ONE_MINUTE.value not in value:
+            raise ValueError(
+                "TW_BAR_INTERVALS must include 1m: every other interval is rolled up from it"
+            )
+        return value
 
     @field_validator("base_currency")
     @classmethod
@@ -211,15 +257,144 @@ class ProviderSettings(_Group):
 class KafkaSettings(_Group):
     """Event backbone (`ARCHITECTURE.md` §16.3, ADR-0001).
 
-    Present from Phase 0 so the names are settled, used from Phase 2.
+    The names were settled in Phase 0; Phase 2 is where they started being read.
+
+    Nothing here is a Kafka default repeated for decoration. Every value is one a
+    deployment would plausibly need to change — a broker address, a consumer group, the
+    partition count the per-symbol ordering guarantee depends on — or one where the client
+    library's default is wrong for this system and the difference is worth stating
+    (``acks``, ``enable_idempotence``, ``auto_offset_reset``).
     """
 
     kafka_bootstrap: str = "localhost:9092"
     kafka_topic_prefix: str = "tw"
+
+    # --- topics ------------------------------------------------------------
+    #: Partitions per market topic. Ordering is guaranteed *per partition* and the key is
+    #: the symbol, so this is the ceiling on consumer parallelism and never a threat to the
+    #: per-symbol ordering the aggregator depends on. Changing it later repartitions the
+    #: keyspace, which is why it is deliberately not 1.
+    kafka_topic_partitions: int = Field(default=6, gt=0)
+    #: One broker locally means nothing can be replicated. Production overrides this; a
+    #: value above the broker count makes topic creation fail rather than silently degrade.
+    kafka_topic_replication: int = Field(default=1, gt=0)
+    #: Create missing topics at worker startup. Right for local and CI, where the broker is
+    #: ephemeral. Production creates topics deliberately and sets this to false.
+    kafka_ensure_topics: bool = True
+
+    # --- producer ----------------------------------------------------------
+    #: "all" means every in-sync replica acknowledged. "1" and "0" trade durability for
+    #: latency, which for market data is the wrong side of the trade.
+    kafka_producer_acks: str = "all"
+    #: Kafka's idempotent producer: a retry inside one producer session stops creating a
+    #: duplicate. It does not make the *pipeline* exactly-once — see ARCHITECTURE.md §7.4.
+    kafka_producer_idempotence: bool = True
+    kafka_producer_linger_ms: int = Field(default=5, ge=0)
+    #: gzip is the only codec available without adding a dependency.
+    kafka_producer_compression: str = "gzip"
+    kafka_producer_request_timeout_ms: int = Field(default=30_000, gt=0)
+    #: Attempts to hand one batch to the broker before publish raises. The caller decides
+    #: what that means; ingestion counts the failure and never drops it silently.
+    kafka_producer_max_attempts: int = Field(default=3, gt=0)
+
+    # --- consumer ----------------------------------------------------------
+    #: One consumer group per logical consumer (`ARCHITECTURE.md` §7.4). The persistence
+    #: consumer is `processor-persist`; a second consumer of the same topics gets its own
+    #: group and therefore its own offsets.
+    kafka_consumer_group: str = "processor-persist"
+    #: The bar aggregator's group. Separate from the persistence consumer's on purpose:
+    #: separate groups mean separate offsets and separate failure domains, which is the
+    #: entire argument for Kafka (ADR-0001). Sharing one would make the two services
+    #: compete for partitions and each would see half the trades.
+    kafka_aggregator_group: str = "bar-aggregator"
+    #: Where a brand-new group starts. "earliest", so a consumer added to an existing topic
+    #: processes the history instead of silently skipping it.
+    kafka_auto_offset_reset: str = "earliest"
+    #: How long one poll waits for records before yielding an empty batch. This is what
+    #: bounds how long a graceful shutdown can take.
+    kafka_consumer_poll_timeout_ms: int = Field(default=1000, gt=0)
+    kafka_consumer_session_timeout_ms: int = Field(default=45_000, gt=0)
+    kafka_consumer_heartbeat_ms: int = Field(default=3_000, gt=0)
     consumer_batch_size: int = Field(default=100, gt=0)
     consumer_max_poll_interval_ms: int = Field(default=300_000, gt=0)
+    #: Bounded retries for a *retryable* failure — a database that is down. A permanent
+    #: failure is never retried: it goes to the DLQ on the first attempt.
     consumer_max_retries: int = Field(default=3, ge=0)
+    consumer_retry_backoff_s: float = Field(default=0.5, gt=0)
+
+    # --- dead letters ------------------------------------------------------
+    #: With this false a permanently bad message is counted, logged and skipped rather than
+    #: quarantined. Nothing blocks either way; the difference is whether the message can be
+    #: recovered afterwards.
     dlq_enabled: bool = True
+
+    @field_validator("kafka_producer_acks", mode="before")
+    @classmethod
+    def _acks_as_text(cls, value: Any) -> Any:
+        """``TW_KAFKA_PRODUCER_ACKS=1`` is an int to some config sources, a string here."""
+        return str(value) if isinstance(value, int) else value
+
+    @field_validator("kafka_producer_acks")
+    @classmethod
+    def _known_acks(cls, value: str) -> str:
+        allowed = {"0", "1", "all"}
+        if value not in allowed:
+            raise ValueError(f"must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("kafka_producer_compression")
+    @classmethod
+    def _known_compression(cls, value: str) -> str:
+        # snappy, lz4 and zstd each need a codec package that is not installed. Accepting
+        # them here would fail at the first produce instead of at startup.
+        allowed = {"gzip", "none"}
+        if value not in allowed:
+            raise ValueError(f"must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("kafka_auto_offset_reset")
+    @classmethod
+    def _known_offset_reset(cls, value: str) -> str:
+        allowed = {"earliest", "latest"}
+        if value not in allowed:
+            raise ValueError(f"must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("kafka_topic_prefix")
+    @classmethod
+    def _usable_prefix(cls, value: str) -> str:
+        """Topic names are built from this, and Kafka accepts a narrow character set."""
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be empty")
+        if not all(character.isalnum() or character in "-_" for character in cleaned):
+            raise ValueError("may contain only letters, digits, '-' and '_'")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _heartbeat_fits_the_session(self) -> Self:
+        """Kafka needs the heartbeat interval well under the session timeout.
+
+        The broker's own rule of thumb is a third. Getting this wrong produces a consumer
+        that is evicted from its group under load, which presents as random rebalancing.
+        """
+        if self.kafka_consumer_heartbeat_ms >= self.kafka_consumer_session_timeout_ms // 3:
+            raise ValueError(
+                "TW_KAFKA_CONSUMER_HEARTBEAT_MS must be under a third of "
+                "TW_KAFKA_CONSUMER_SESSION_TIMEOUT_MS"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _idempotence_requires_full_acks(self) -> Self:
+        """Kafka's idempotent producer is only defined with acks=all.
+
+        aiokafka rejects the combination when it connects; refusing it here names the two
+        environment variables involved instead of raising from inside the client.
+        """
+        if self.kafka_producer_idempotence and self.kafka_producer_acks != "all":
+            raise ValueError("TW_KAFKA_PRODUCER_IDEMPOTENCE requires TW_KAFKA_PRODUCER_ACKS=all")
+        return self
 
 
 class DatabaseSettings(_Group):

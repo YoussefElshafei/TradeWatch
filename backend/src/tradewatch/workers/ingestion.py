@@ -54,6 +54,7 @@ async def run_ingestion(
     publisher: EventPublisher,
     *,
     provider: MarketDataProvider | None = None,
+    service: IngestionService | None = None,
     max_events: int | None = None,
     stop: asyncio.Event | None = None,
 ) -> IngestionService:
@@ -62,8 +63,19 @@ async def run_ingestion(
     Trades and quotes run as separate tasks. If either fails permanently the other is
     cancelled too: a half-running ingester that publishes quotes with no trades looks
     healthy and is not.
+
+    ``service`` lets a caller supply an already-built :class:`IngestionService` instead of
+    having one made here. The Phase 2 producer does that because it backfills history before
+    it starts streaming, and a second service would mean a second deduplicator and a second
+    set of counters — so the backfilled bars would not be visible in the stats of the run
+    that published them, and a bar fetched twice would not be recognised as a duplicate.
     """
-    service, resolved = build_service(settings, publisher, provider=provider)
+    if service is None:
+        service, resolved = build_service(settings, publisher, provider=provider)
+    elif provider is None:
+        raise ValueError("passing `service` also requires its `provider`")
+    else:
+        resolved = provider
     symbols = list(settings.market.symbols)
     policy = retry_policy_from_settings(settings.provider)
     capabilities = resolved.capabilities

@@ -136,6 +136,21 @@ and `list_instruments()`. Two implementations ship from day one:
 
 ### 3.3 Bar Aggregator
 
+**As built (Phase 3).** Runs as its own service, `tradewatch-aggregator`, in its own
+consumer group — the first second consumer of `tw.market.trades.v1`, which is what makes
+ADR-0001's fan-out argument true rather than intended. Event-time closing, a bounded lateness
+window producing `revision`-bumped corrections (F11), and restart recovery by persisting the
+open bar with `is_final = false` (F13). The design decisions, including the one that cost
+153,128 dropped trades before it was found, are in
+[ADR-0015](ADR/ADR-0015-event-time-bar-aggregation.md).
+
+Its restart story is superseded by
+[ADR-0016](ADR/ADR-0016-idempotent-bar-aggregation-under-redelivery.md). Persisting the open
+bar survives a restart but not the **redelivery** a restart causes: an accumulator is not made
+idempotent by its writes, and folding a redelivered trade twice put its size in the volume
+twice while leaving OHLC perfect. The service now records its stream position in the same
+transaction as the bars and skips anything at or below it.
+
 **Responsibility:** turn a trade stream into OHLCV bars.
 
 - Consumes trades, maintains per-symbol open bars in memory, and closes a bar when the
@@ -548,7 +563,16 @@ redefinition.
 **Keying is a correctness decision, not a performance one.** Keying market topics by
 `symbol` guarantees per-symbol ordering, which the Bar Aggregator and every strategy depend
 on. Keying `tw.signals.v1` by `deployment_id` guarantees that one deployment's signals are
-processed in order, so its position never inverts.
+processed in order, so its position never inverts. It guarantees nothing *across* symbols,
+and nothing in this system claims otherwise.
+
+**As built (Phase 2):** four of these topics exist — `tw.market.trades.v1`,
+`tw.market.quotes.v1`, `tw.market.bars.1m.v1` and `tw.dlq.v1`, each with six partitions and
+the retention above. The rest are created by the phase that produces them; a topic with no
+producer and no consumer is a name in a broker. Only 1-minute bars are published, because
+the aggregator that would produce the other intervals is Phase 3 — longer intervals are
+derived from stored 1m bars instead. Broker-side auto-creation is off, so topics are created
+deliberately with the partition count the ordering guarantee depends on.
 
 ### 7.3 Event types
 
@@ -578,6 +602,24 @@ alert.raised          { alert_id, user_id, event_type, severity, title, body, pa
 - A poison message is retried a bounded number of times, then published to `tw.dlq.v1` with
   the original headers, the consumer group, the error, and the failure count. A consumer
   never blocks a partition forever on one bad message.
+
+**As built (Phase 2), with the parts this section left open decided in
+[ADR-0014](ADR/ADR-0014-consumer-acknowledgement-and-dead-letter-policy.md):**
+
+- The producer uses `acks=all` and Kafka's idempotent producer, and awaits the
+  acknowledgement. This is at-least-once and is not exactly-once: producer idempotence covers
+  retries within one session, not a producer that restarts and republishes.
+- `processor-persist` is the only consumer group so far. Auto-commit is off, permanently.
+- **Retry count is not what decides the DLQ.** Classification is. A *permanent* failure —
+  undecodable bytes, an unsupported `schema_version`, an unknown `event_type`, an invalid
+  payload, or a row the database refuses — is quarantined on the first attempt, because
+  retrying it only delays the same answer. A *retryable* failure — the database is down — is
+  never quarantined: the offset stays uncommitted and the events wait on their topic, because
+  dead-lettering during an outage converts a recoverable incident into a manual replay.
+- A batch the store rejects permanently is replayed one event at a time, so one bad row costs
+  one event rather than the whole batch.
+- There is no redrive tool, deliberately: every reason a message is in the DLQ is a reason
+  that repeating it unchanged would fail again.
 
 ---
 
@@ -765,13 +807,13 @@ No number appears in the README until it comes out of one of these.
 | F4 | Kafka unavailable at publish | Producer errors | Bounded local buffer with backpressure; if the buffer fills, drop *quotes* first and log loudly — never block trade ingestion indefinitely | Stop the broker container mid-stream |
 | F5 | Kafka unavailable to consumers | Consumer errors | Retry loop, no offset commit, resume from the last committed offset; no data loss within retention | Stop/start the broker; assert no gaps in the DB |
 | F6 | Consumer crashes mid-batch | Process exit / health check | Offsets uncommitted → redelivery → idempotent writes absorb duplicates | `kill -9` mid-batch; assert identical row counts |
-| F7 | Duplicate delivery | Normal at-least-once behaviour | `UNIQUE(event_id)` / upsert; no double-counted volume, no duplicate orders | Replay the same batch twice; assert identical state |
+| F7 | Duplicate delivery | Normal at-least-once behaviour | `UNIQUE(event_id)` / upsert for consumers whose write is a *replacement*. A consumer that **accumulates** is not covered by that and needs its own mechanism: the bar aggregator records its stream position in the same transaction as the bars ([ADR-0016](ADR/ADR-0016-idempotent-bar-aggregation-under-redelivery.md)) | Rewind the consumer group's offsets and drain the lag; assert `volume`, `trade_count` and `vwap` are unchanged |
 | F8 | PostgreSQL unavailable | Connection errors | Consumers pause and retry with backoff (lag grows, data stays safe in Kafka); API `/ready` returns 503 | Stop the DB container; assert recovery with no loss |
 | F9 | Redis unavailable | Connection errors | **Degrade, never fail:** cache misses fall through to PostgreSQL; rate limiting fails closed on authenticated writes, open on reads | Stop Redis; assert the app still serves |
 | F10 | Consumer lag grows unbounded | Lag metric over threshold | Alert; scale partitions/consumers; documented shedding order (quotes before trades) | Load test at 2× expected rate |
 | F11 | Out-of-order / late market data | `occurred_at` earlier than the current bar start | Bounded lateness window; after close, emit `market.bar.corrected` rather than mutating history | Inject late trades in a fixture |
 | F12 | Clock skew between services | Compare `ingested_at` to broker time | All business logic uses `occurred_at`; the wall clock is used only for timeouts | Skewed-clock unit test |
-| F13 | Bar Aggregator restart loses open bars | Startup with empty state | Rebuild the current partial bar by replaying trades from the last committed offset | Restart mid-bar; assert the bar closes correctly |
+| F13 | Bar Aggregator restart loses open bars | Startup with empty state | The open bar is written on every flush with `is_final = false` and reloaded at startup; redelivered trades already folded in are skipped by the recorded stream position (ADR-0015, ADR-0016) | Restart mid-bar; assert the bar closes correctly and that redelivering a folded trade does not change it |
 | F14 | Strategy raises an exception | Exception during evaluation | Isolate per deployment: mark it `errored`, stop it, alert the owner; other deployments continue | Inject a throwing strategy |
 | F15 | Runaway strategy (order storm) | Order rate per deployment | Hard per-deployment order-rate limit and max-position guard, enforced before the simulator | A strategy that signals every bar |
 | F16 | Backtest hangs or OOMs | Job timeout, memory ceiling | Bounded row streaming (never load a full history into memory), per-run timeout, run marked `failed` with a reason | Backtest over an absurd range |
@@ -779,6 +821,32 @@ No number appears in the README until it comes out of one of these.
 | F18 | Alert storm during a volatile open | Alerts per rule per minute | Per-rule cooldown + dedupe key + per-user hourly cap with a digest | Feed a synthetic crash |
 | F19 | Slow WebSocket client | Send-buffer high-water mark | Drop the slow client's backlog and send a resync marker; one slow browser cannot stall a broadcaster | Simulate a stalled reader |
 | F20 | Migration fails on deploy | Alembic error | Migrations run as a separate gated step before app rollout; expand/contract pattern so old and new code both work mid-deploy | CI runs upgrade → downgrade → upgrade |
+
+### Known limitations against this catalogue
+
+**F11 — a multi-hour single-symbol backlog defeats the lateness window.** *Open. Phase 11
+(failure recovery). Found in Phase 3; deliberately not fixed there.*
+
+The lateness window is measured against that symbol's own event-time watermark, which is what
+stops one symbol's progress from sealing another's bars ([ADR-0015](ADR/ADR-0015-event-time-bar-aggregation.md)).
+It assumes the watermark advances at roughly the rate trades arrive. When a single symbol is
+backlogged by hours — a partition that stalled, a consumer restarted against a long retention,
+a backfill replayed into the live topic — draining it advances that symbol's watermark by hours
+within seconds. Every bar behind the jump is sealed, and the trades still queued behind it are
+counted in `late_dropped` and discarded.
+
+The loss is *reported*, not silent: `aggregator.late_trade_dropped` carries the symbol, the
+event id and how far behind the trade was, and `late_dropped` is the one counter in
+`AggregatorStats` that represents data the system chose not to keep. It is also the mechanism
+by which 153,128 trades were dropped in the first live replay, before per-symbol sealing was
+separated from global closing — that instance is fixed; this one is the residue.
+
+It is out of scope for [ADR-0016](ADR/ADR-0016-idempotent-bar-aggregation-under-redelivery.md),
+which makes redelivery safe and makes no claim about lateness. Fixing it means either sizing
+the window in *stream* time rather than wall-clock-shaped event time, or routing a detected
+backlog through the backfill path (which rebuilds bars from provider history and has no
+watermark at all) instead of the live aggregator. Both are recovery-mode behaviour, which is
+what Phase 11 is for.
 
 ---
 
@@ -912,9 +980,36 @@ settings object (`TW_`-prefixed, Pydantic Settings).
 
 ### 16.3 Kafka
 
-`TW_KAFKA_BOOTSTRAP`, `TW_KAFKA_TOPIC_PREFIX` (`tw`), per-topic partition count and
-retention, `TW_CONSUMER_BATCH_SIZE`, `TW_CONSUMER_MAX_POLL_INTERVAL_MS`,
-`TW_CONSUMER_MAX_RETRIES`, `TW_DLQ_ENABLED`.
+Read from Phase 2. Every value is one a deployment would plausibly change, or one where the
+client library's default is wrong for this system and the difference is worth stating.
+
+| Key | Default | Note |
+| --- | --- | --- |
+| `TW_KAFKA_BOOTSTRAP` | `localhost:9092` | `kafka:19092` from inside the Compose network |
+| `TW_KAFKA_TOPIC_PREFIX` | `tw` | Everything after the prefix is a contract (§7.2) |
+| `TW_KAFKA_TOPIC_PARTITIONS` | `6` | The ceiling on consumer parallelism; never a risk to per-symbol ordering |
+| `TW_KAFKA_TOPIC_REPLICATION` | `1` | One broker locally. Raise in production |
+| `TW_KAFKA_ENSURE_TOPICS` | `true` | Create missing topics at startup; false in production |
+| `TW_KAFKA_PRODUCER_ACKS` | `all` | Every in-sync replica acknowledged |
+| `TW_KAFKA_PRODUCER_IDEMPOTENCE` | `true` | Producer retries do not duplicate. Requires `acks=all` |
+| `TW_KAFKA_PRODUCER_COMPRESSION` | `gzip` | Or `none`; other codecs need a package that is not installed |
+| `TW_KAFKA_PRODUCER_LINGER_MS` | `5` | |
+| `TW_KAFKA_PRODUCER_REQUEST_TIMEOUT_MS` | `30000` | |
+| `TW_KAFKA_PRODUCER_MAX_ATTEMPTS` | `3` | Bounded; then the caller is told |
+| `TW_KAFKA_CONSUMER_GROUP` | `processor-persist` | One group per logical consumer (§7.4) |
+| `TW_KAFKA_AGGREGATOR_GROUP` | `bar-aggregator` | The bar aggregator's own group and offsets |
+| `TW_KAFKA_AUTO_OFFSET_RESET` | `earliest` | A new group processes history rather than skipping it |
+| `TW_KAFKA_CONSUMER_POLL_TIMEOUT_MS` | `1000` | Bounds how long shutdown takes |
+| `TW_KAFKA_CONSUMER_SESSION_TIMEOUT_MS` | `45000` | |
+| `TW_KAFKA_CONSUMER_HEARTBEAT_MS` | `3000` | Must be under a third of the session timeout |
+| `TW_CONSUMER_BATCH_SIZE` | `100` | Records per poll, and the processor's flush size |
+| `TW_CONSUMER_MAX_POLL_INTERVAL_MS` | `300000` | |
+| `TW_CONSUMER_MAX_RETRIES` | `3` | The **only** retry budget; retryable failures only |
+| `TW_CONSUMER_RETRY_BACKOFF_S` | `0.5` | |
+| `TW_DLQ_ENABLED` | `true` | False counts and logs instead of quarantining |
+
+Auto-commit has no setting because it is not a choice: it acknowledges messages that have
+been fetched rather than stored, which converts at-least-once into at-most-once.
 
 ### 16.4 Storage and cache
 

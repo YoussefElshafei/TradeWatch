@@ -58,6 +58,58 @@ services:
       retries: 10
     restart: unless-stopped
 
+  kafka:
+    # KRaft mode: broker and controller in one process, no ZooKeeper (ADR-0001). One broker
+    # is the right size for a laptop and the wrong size for anything else — which is why
+    # every replication factor below is 1 and says so.
+    image: apache/kafka:4.0.0
+    container_name: tradewatch-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # Two client listeners on purpose. Containers reach the broker as `kafka:19092`; the
+      # host reaches it as `127.0.0.1:9092`. A single advertised listener cannot be correct
+      # for both, and getting this wrong produces a client that connects, fetches metadata,
+      # and then times out talking to an address it cannot route to.
+      KAFKA_LISTENERS: INTERNAL://:19092,CONTROLLER://:9093,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://127.0.0.1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+      # Single broker: nothing can be replicated, and pretending otherwise makes every
+      # internal topic fail to create.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      # No waiting for a second consumer that is never coming.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created deliberately, with the partition count the ordering guarantee
+      # needs (see tradewatch.infrastructure.events.kafka.admin). Auto-creation would give
+      # a one-partition topic to whoever connected first and hide the mistake.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: tradewatch-local-cluster
+      TZ: UTC
+    ports:
+      - '127.0.0.1:9092:9092'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # Asks the broker to list topics over the host listener: proves it is not merely
+      # running but actually serving the API the workers use.
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list || exit 1',
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
   api:
     profiles: ['app']
     build:
@@ -70,6 +122,7 @@ services:
       TW_API_HOST: 0.0.0.0
       TW_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-tradewatch}:${POSTGRES_PASSWORD:-tradewatch}@postgres:5432/${POSTGRES_DB:-tradewatch}
       TW_REDIS_URL: redis://redis:6379/0
+      TW_KAFKA_BOOTSTRAP: kafka:19092
       TW_JWT_SECRET: ${TW_JWT_SECRET:-container-local-development-secret}
     ports:
       - '127.0.0.1:8000:8000'
@@ -89,3 +142,5 @@ services:
 volumes:
   postgres-data:
     name: tradewatch-postgres-data
+  kafka-data:
+    name: tradewatch-kafka-data

@@ -5,15 +5,21 @@ storage, configurable trading strategies, backtesting, simulated trading, detect
 statistically unusual market activity, and alerting — behind a FastAPI backend and a React
 dashboard.
 
-**Status: Phase 1 complete — the first vertical slice is closed.** Market data travels the
-whole path and is rendered in a browser:
+**Status: Phase 3 complete — real bars, built from trades, over a month of history.**
 
 ```
-SyntheticProvider → normalize → EventBus → Processor → PostgreSQL → FastAPI → React chart
+Provider → normalize → Kafka ─┬→ Processor  → PostgreSQL → FastAPI → React chart
+                              └→ Aggregator → PostgreSQL (1m bars → 5m/1h/1d rollups)
 ```
 
-There is no Kafka yet (the event bus is in-process), no strategy engine, no ML and no real
-dashboard. See [docs/PIPELINE.md](docs/PIPELINE.md) for how the slice works,
+Three independent processes. Two consumer groups read the same trade topic with independent
+offsets, which is the fan-out ADR-0001 chose Kafka for and Phase 2 had not yet demonstrated.
+Delivery is at-least-once, every write is idempotent, and offsets are committed only after
+the data is stored.
+
+There is no strategy engine, no ML and no real dashboard. See
+[docs/PIPELINE.md](docs/PIPELINE.md) for how the pipeline works,
+[docs/BACKFILL.md](docs/BACKFILL.md) for history and bar aggregation,
 [docs/SCHEMA.md](docs/SCHEMA.md) for the data model, and
 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for what comes next.
 
@@ -45,13 +51,24 @@ powershell -File scripts/setup.ps1      # Windows PowerShell (pwsh works too)
 ```
 
 That checks prerequisites, copies `.env.example` to `.env`, and installs both dependency
-sets. Then, in two terminals:
+sets. Then, in four terminals:
 
 ```bash
-cd backend  && uv run tradewatch-pipeline  # market data → PostgreSQL (no credentials needed)
-cd backend  && uv run tradewatch-api       # http://127.0.0.1:8000  (docs at /docs)
-cd frontend && npm run dev                 # http://127.0.0.1:5173 — a chart with real data
+cd backend  && uv run tradewatch-producer   # market data → Kafka (no credentials needed)
+cd backend  && uv run tradewatch-consumer   # Kafka → PostgreSQL
+cd backend  && uv run tradewatch-aggregator # Kafka → 1m bars → 5m/1h/1d rollups
+cd backend  && uv run tradewatch-api        # http://127.0.0.1:8000  (docs at /docs)
+cd frontend && npm run dev                  # http://127.0.0.1:5173 — a chart with real data
 ```
+
+For history to backtest against later, run the one-shot backfill once:
+
+```bash
+cd backend && uv run tradewatch-backfill --days 30   # idempotent; re-run it freely
+```
+
+The order does not matter, which is the point of the log: start the consumer first and it
+waits; start the producer first and the consumer catches up when it arrives.
 
 The dashboard shows whether it can reach the API. If it says *unreachable*, the backend is
 not running or `VITE_API_BASE_URL` points somewhere else.
@@ -59,9 +76,14 @@ not running or `VITE_API_BASE_URL` points somewhere else.
 Infrastructure comes first, because the API checks the database on `/ready`:
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d     # PostgreSQL + Redis
+docker compose -f docker/docker-compose.yml up -d     # PostgreSQL + Redis + Kafka
 cd backend && uv run alembic upgrade head             # create the schema
 ```
+
+Kafka runs as a single broker in KRaft mode — no ZooKeeper. Topics are created by the
+workers on first start, because broker-side auto-creation is switched off: a topic created
+implicitly gets one partition and infinite retention, and both would be discovered much
+later.
 
 The Compose stack also creates a `tradewatch_test` database on first start, which is where
 the integration tests run — never the application database.
@@ -85,7 +107,7 @@ tradewatch/
 │   │   ├── application/       Use cases; depends on ports, never on adapters
 │   │   ├── infrastructure/    Adapters: database models, repositories, sessions
 │   │   ├── api/               FastAPI gateway — the only inbound door
-│   │   ├── workers/           Consumers and jobs
+│   │   ├── workers/           The producer, the consumer, and jobs
 │   │   ├── config/            Typed settings and .env loading
 │   │   └── observability/     Structured logging (metrics and tracing in Phase 10)
 │   ├── alembic/               Migrations; the schema's source of truth
@@ -137,11 +159,15 @@ powershell -File scripts/check.ps1      # Windows PowerShell (pwsh works too)
 | --- | --- |
 | `uv sync --all-groups` | Install dependencies, including dev tools |
 | `uv run tradewatch-api` | Start the API with reload |
-| `uv run tradewatch-pipeline` | Ingest **and** persist market data — the vertical slice |
+| `uv run tradewatch-producer` | Provider → Kafka |
+| `uv run tradewatch-consumer` | Kafka → PostgreSQL |
+| `uv run tradewatch-aggregator` | Kafka → 1m bars, plus 5m/1h/1d rollups |
+| `uv run tradewatch-backfill --days 30` | One-shot history fetch; idempotent and resumable |
 | `uv run tradewatch-ingest` | Ingestion only, publishing to a bus nothing drains |
+| `uv run tradewatch-pipeline` | The Phase 1 single process, in-memory bus — for development with no broker |
 | `uv run pytest` | All tests |
 | `uv run pytest -m unit` | Unit tests only (fast) |
-| `uv run pytest -m integration` | Against real PostgreSQL; skipped with a message if none is reachable |
+| `uv run pytest -m integration` | Against real PostgreSQL and Kafka; skipped with a message if either is unreachable |
 | `uv run pytest -m provider` | Against the live market data provider; needs credentials, opt-in |
 | `uv run alembic upgrade head` | Apply migrations |
 | `uv run alembic downgrade -1` | Undo the last one |

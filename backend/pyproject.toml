@@ -10,6 +10,7 @@ license = { text = "MIT" }
 # pull request (see DEVELOPMENT_PLAN.md "Definition of Done"). Database, Kafka, Redis and
 # ML dependencies are deliberately absent until the phase that uses them.
 dependencies = [
+    "aiokafka>=0.12",
     "alembic>=1.16",
     "asyncpg>=0.30",
     "fastapi>=0.118",
@@ -25,7 +26,15 @@ dependencies = [
 
 [project.scripts]
 tradewatch-api = "tradewatch.api.__main__:main"
+# The Phase 2 primary path: two processes, a durable log between them (ADR-0001).
+tradewatch-producer = "tradewatch.workers.market_data_producer:main"
+tradewatch-consumer = "tradewatch.workers.market_data_consumer:main"
+# Phase 3: the second consumer group, and the history it needs (ADR-0001).
+tradewatch-aggregator = "tradewatch.workers.bar_aggregator:main"
+tradewatch-backfill = "tradewatch.workers.backfill:main"
 tradewatch-ingest = "tradewatch.workers.ingestion:main"
+# The Phase 1 single-process path, kept for development without a broker. No replay, no
+# restart safety, no independent failure domains — see docs/PIPELINE.md.
 tradewatch-pipeline = "tradewatch.workers.pipeline:main"
 
 [dependency-groups]
@@ -119,6 +128,16 @@ pretty = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+# aiokafka ships no `py.typed` marker, so mypy cannot see its annotations. This silences
+# that one import, and nothing else: strict mode still applies in full to every module
+# that uses it. The adapters declare narrow `ProducerClient` / `ConsumerClient` protocols
+# over the handful of methods they call, so the untyped surface stops at the boundary
+# instead of leaking `Any` into the codebase — which is also what makes those clients
+# substitutable in tests.
+module = ["aiokafka.*"]
+ignore_missing_imports = true
+
 
 # ---------------------------------------------------------------------------
 # pytest
@@ -209,3 +228,18 @@ name = "Domain is independent of frameworks"
 type = "forbidden"
 source_modules = ["tradewatch.domain"]
 forbidden_modules = ["fastapi", "sqlalchemy", "redis", "uvicorn"]
+
+[[tool.importlinter.contracts]]
+# Phase 2's central claim, made checkable. The application gained a Kafka consumer, and
+# the thing that would quietly undo the seam is one `from aiokafka import ...` in a
+# service — at which point the in-memory bus stops being able to stand in for the broker
+# and every consumer test needs infrastructure. The contract above already forbids
+# application → infrastructure; this forbids reaching past it to the library directly.
+name = "Kafka is an adapter: nothing above infrastructure imports a broker client"
+type = "forbidden"
+source_modules = [
+    "tradewatch.domain",
+    "tradewatch.application",
+    "tradewatch.api",
+]
+forbidden_modules = ["aiokafka", "kafka"]

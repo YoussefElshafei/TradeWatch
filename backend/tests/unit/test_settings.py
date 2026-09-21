@@ -7,7 +7,7 @@ message. These tests are what makes that a fact rather than an intention.
 from __future__ import annotations
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from tradewatch.config.settings import (
     AnomalySettings,
@@ -16,6 +16,7 @@ from tradewatch.config.settings import (
     ConfigurationError,
     DatabaseSettings,
     Environment,
+    KafkaSettings,
     LogFormat,
     MarketSettings,
     RedisSettings,
@@ -171,3 +172,92 @@ class TestSecrets:
 
         assert "test-secret" not in repr(settings)
         assert settings.security.jwt_secret.get_secret_value().startswith("test-secret")
+
+
+class TestKafkaSettings:
+    """Phase 2 configuration.
+
+    The validators here exist to turn a class of runtime surprise into a startup error:
+    a producer that aiokafka rejects when it connects, a consumer the broker evicts from
+    its group under load, a compression codec whose package is not installed.
+    """
+
+    def test_the_defaults_are_the_durable_ones(self) -> None:
+        kafka = KafkaSettings()
+
+        assert kafka.kafka_producer_acks == "all"
+        assert kafka.kafka_producer_idempotence is True
+        assert kafka.kafka_auto_offset_reset == "earliest"
+        assert kafka.dlq_enabled is True
+
+    def test_the_consumer_group_is_named_for_its_job(self) -> None:
+        """`ARCHITECTURE.md` §7.4: one group per logical consumer."""
+        assert KafkaSettings().kafka_consumer_group == "processor-persist"
+
+    def test_acks_accepts_an_integer_from_the_environment(self) -> None:
+        kafka = KafkaSettings(
+            kafka_producer_acks=1,  # type: ignore[arg-type]
+            kafka_producer_idempotence=False,
+        )
+
+        assert kafka.kafka_producer_acks == "1"
+
+    def test_an_unknown_acks_value_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            KafkaSettings(kafka_producer_acks="most")
+
+    def test_idempotence_requires_full_acks(self) -> None:
+        """aiokafka refuses this combination at connect time; naming the variables is kinder."""
+        with pytest.raises(ValidationError, match="TW_KAFKA_PRODUCER_ACKS=all"):
+            KafkaSettings(kafka_producer_acks="1", kafka_producer_idempotence=True)
+
+    def test_weaker_acks_are_allowed_without_idempotence(self) -> None:
+        kafka = KafkaSettings(kafka_producer_acks="1", kafka_producer_idempotence=False)
+
+        assert kafka.kafka_producer_acks == "1"
+
+    def test_a_codec_with_no_package_installed_is_refused_at_startup(self) -> None:
+        """Otherwise it fails on the first produce, hours later."""
+        with pytest.raises(ValidationError):
+            KafkaSettings(kafka_producer_compression="snappy")
+
+    def test_gzip_and_none_are_accepted(self) -> None:
+        assert KafkaSettings(kafka_producer_compression="none").kafka_producer_compression == "none"
+        assert KafkaSettings(kafka_producer_compression="gzip").kafka_producer_compression == "gzip"
+
+    def test_an_unknown_offset_reset_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            KafkaSettings(kafka_auto_offset_reset="beginning")
+
+    def test_a_heartbeat_too_close_to_the_session_timeout_is_refused(self) -> None:
+        """Getting this wrong presents as random rebalancing under load."""
+        with pytest.raises(ValidationError, match="HEARTBEAT"):
+            KafkaSettings(
+                kafka_consumer_session_timeout_ms=10_000,
+                kafka_consumer_heartbeat_ms=9_000,
+            )
+
+    def test_a_topic_prefix_kafka_would_reject_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            KafkaSettings(kafka_topic_prefix="tw/prod")
+
+    def test_an_empty_topic_prefix_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            KafkaSettings(kafka_topic_prefix="   ")
+
+    def test_partitions_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            KafkaSettings(kafka_topic_partitions=0)
+
+    def test_settings_are_read_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, required_env: None
+    ) -> None:
+        monkeypatch.setenv("TW_KAFKA_BOOTSTRAP", "broker-1:9092,broker-2:9092")
+        monkeypatch.setenv("TW_KAFKA_CONSUMER_GROUP", "bar-aggregator")
+        monkeypatch.setenv("TW_CONSUMER_BATCH_SIZE", "500")
+
+        settings = load_settings()
+
+        assert settings.kafka.kafka_bootstrap == "broker-1:9092,broker-2:9092"
+        assert settings.kafka.kafka_consumer_group == "bar-aggregator"
+        assert settings.kafka.consumer_batch_size == 500

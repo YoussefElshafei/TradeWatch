@@ -35,5 +35,8 @@ reasoning, which is the only thing an ADR is for.
 | [0011](ADR-0011-alpaca-as-the-market-data-provider.md) | Alpaca as the market data provider (closes D1) | Accepted |
 | [0012](ADR-0012-deterministic-event-identity.md) | Deterministic event identity for market data | Accepted |
 | [0013](ADR-0013-recharts-for-the-price-chart.md) | Recharts for the price chart (closes D12) | Accepted |
+| [0014](ADR-0014-consumer-acknowledgement-and-dead-letter-policy.md) | Consumer acknowledgement boundary and dead-letter policy | Accepted |
+| [0015](ADR-0015-event-time-bar-aggregation.md) | Event-time bar aggregation, with per-symbol sealing | Superseded by ADR-0016 |
+| [0016](ADR-0016-idempotent-bar-aggregation-under-redelivery.md) | Idempotent bar aggregation under redelivery | Accepted |
 
 Template: [TEMPLATE.md](TEMPLATE.md)

@@ -124,7 +124,7 @@ the smallest possible amount of infrastructure.
 
 ---
 
-## Phase 2 — Kafka Backbone and Service Split
+## Phase 2 — Kafka Backbone and Service Split — **COMPLETE**
 
 **Goal:** the components become independent processes communicating through a durable log.
 
@@ -133,37 +133,82 @@ cannot fan out to independent consumers with independent failure domains, and ca
 scaled. Phase 3 onwards needs all four. This is the concrete requirement that justifies
 Kafka (ADR-0001).
 
-**Deliverables**
+**Status:** closed. `tradewatch-producer` and `tradewatch-consumer` are separate processes
+with Kafka between them; either can be restarted, or be absent, without the other losing an
+event. See [docs/PIPELINE.md](docs/PIPELINE.md) for the topology, the delivery semantics and
+the failure handling, and
+[ADR-0014](ADR/ADR-0014-consumer-acknowledgement-and-dead-letter-policy.md) for the
+acknowledgement boundary and the dead-letter policy.
 
-- Kafka (KRaft, single broker) in docker-compose; a topic-creation script with the
-  partition counts and retention from ARCHITECTURE.md §7.2.
-- Kafka adapters for the `EventPublisher` / `EventConsumer` ports — no domain or
-  application code changes, which is itself the proof the Phase 1 seam was drawn correctly.
-- Process split: `ingestion` and `processor` become separate services with their own
-  entrypoints, Dockerfiles, and health endpoints.
+**Delivered**
+
+- Kafka (KRaft, single broker) in docker-compose, with auto-creation switched off.
+- Topic creation with the partition counts and retention from ARCHITECTURE.md §7.2 — as an
+  idempotent function the workers call at startup rather than a separate script, so a fresh
+  clone needs no extra step and two workers racing cannot break.
+- Kafka adapters behind the ports. `IngestionService` and `MarketDataProcessor` are
+  unchanged, which is the proof the Phase 1 seam was drawn correctly. Two protocols were
+  *added* — `EventBatchConsumer` and `DeadLetterSink` — because durable messaging
+  acknowledges in batches and because quarantining is a transport concern the application
+  has to be able to request without naming a broker (ADR-0014).
+- Process split, with `tradewatch-producer` and `tradewatch-consumer` entrypoints.
 - Idempotent consumption with offset-commit-after-write.
-- Dead-letter topic handling with bounded retries.
-- Consumer lag metrics exposed.
-- A replay tool: re-consume a topic from a given offset or timestamp into the database.
+- Dead-letter topic handling. Placement is decided by **classification**, not by retry
+  count: a permanent failure is quarantined on the first attempt, and a retryable one is
+  never quarantined at all.
+- An explicit, versioned event envelope with deterministic serialization.
+
+**Not delivered, and why**
+
+- **Consumer lag metrics.** Lag is visible through `kafka-consumer-groups --describe` and
+  the consumer's own counters, but there is no metrics endpoint: Phase 10 owns Prometheus,
+  and a metrics surface built here would be built twice.
+- **A replay tool.** Replay *works* — a new consumer group reads a topic from the beginning,
+  and an integration test asserts that doing so changes no stored data — but there is no
+  command that replays from a given offset or timestamp. Deferred until something needs it;
+  the obvious first customer is the Phase 3 aggregator, re-running a day of trades.
+- **Dockerfiles and health endpoints for the workers.** The workers run on the host in
+  development and the Compose `app` profile covers the API image. A worker health endpoint
+  is worth having when something schedules the workers, which is Phase 12.
 
 **Exit criteria**
 
-- Killing the processor mid-stream and restarting it loses no events and creates no
-  duplicates — asserted by a test that compares row counts and checksums.
-- Killing the broker for 60 seconds and restarting it results in the consumer draining its
-  lag with no gaps.
-- A deliberately malformed event lands in the DLQ; the consumer keeps running.
-- Replaying a topic twice into a fresh database produces byte-identical table contents.
-- All Phase 1 exit criteria still hold.
+| Criterion | Status |
+| --- | --- |
+| Restarting the consumer loses no events and creates no duplicates | **Met.** `test_a_restarted_consumer_does_not_re_read_what_it_finished` and `test_reprocessing_the_whole_topic_changes_nothing`, which compares stored values rather than row counts |
+| Killing the broker and restarting it drains the lag with no gaps | **Met.** `test_an_outage_costs_lag_and_not_data` stops and starts the Compose container and asserts every event survives |
+| A malformed event lands in the DLQ; the consumer keeps running | **Met.** With the original bytes and diagnostic headers |
+| Replaying a topic twice produces identical table contents | **Met in substance, not literally.** Asserted against the same database rather than a fresh one: a second consumer group replays every message and the stored values are unchanged. A fresh-database comparison needs the replay tool above |
+| All Phase 1 exit criteria still hold | **Met.** The Phase 1 in-process path still runs and is still tested |
 
 **Explicitly deferred:** schema registry, multi-broker, exactly-once semantics, stream
 processing frameworks.
 
 ---
 
-## Phase 3 — Real Market Data and Historical Depth
+## Phase 3 — Real Market Data and Historical Depth — **COMPLETE**
 
 **Goal:** the system runs on real market data, and has enough history to backtest against.
+
+**Status:** closed, with one honest caveat. The bar aggregator runs as its own service in its
+own consumer group, the backfill is idempotent and resumable, and a month of 1-minute bars is
+stored and passes the quality checks. The **real provider adapter has still never run against
+the live Alpaca API**, because no credentials exist in this environment — it was validated by
+reading it against its own documented constraints, which found three defects including one
+that would have broken live streaming outright. `pytest -m provider` closes that gap and needs
+a key pair. See [docs/BACKFILL.md](docs/BACKFILL.md),
+[ADR-0015](ADR/ADR-0015-event-time-bar-aggregation.md) and
+[ADR-0016](ADR/ADR-0016-idempotent-bar-aggregation-under-redelivery.md), which supersedes
+0015's restart story after the aggregator was found to double every redelivered trade.
+
+**Exit criteria**
+
+| Criterion | Status |
+| --- | --- |
+| A month of 1m bars for the watchlist exists and passes the quality checks | **Met.** 172,800 bars across four symbols, no gaps, no invariant violations |
+| Restarting the aggregator mid-bar produces a correct closed bar | **Met, after a fix.** Resuming was already asserted by comparison against an uninterrupted run. What those tests never did was redeliver a trade the previous run had already folded in — the thing a restart actually causes — and doing so doubled `volume`, `trade_count` and `vwap` while leaving OHLC perfect. Fixed by recording the consumer's stream position in the same transaction as the bars (ADR-0016). Now proven live: offsets rewound 3,000 × 3 partitions, 9,000 events redelivered, 9,000 skipped as already applied, and a checksum over every 1m bar identical before and after |
+| Losing the provider connection reconnects automatically | **Met in code, unverified against the live service.** The Phase 1 `resilience` module is wired in and unit-tested; no credentials to prove it against Alpaca |
+| With `TW_PROVIDER=synthetic` nothing about existing behaviour changes | **Met.** Synthetic remains the default and every Phase 1 and 2 test still passes |
 
 **Deliverables**
 
@@ -174,7 +219,8 @@ processing frameworks.
 - **Historical backfill job:** fetch and store bars for a symbol/date range, idempotent and
   resumable, with gap detection and a gap-filling pass.
 - **Full Bar Aggregator** as its own service: event-time bar closing, a lateness window,
-  correction events, and partial-bar rebuild on restart (F13).
+  correction events, partial-bar rebuild on restart (F13), and accumulation that survives the
+  redelivery a restart causes (F7, ADR-0016).
 - Higher-interval rollups (5m, 1h, 1d) from 1m bars.
 - Data quality checks: bar invariants, duplicate prints, gaps during market hours.
 

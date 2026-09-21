@@ -60,17 +60,46 @@ def settings() -> Settings:
     )
 
 
+#: A database address nothing can be listening on. Port 1 is privileged and unassigned, so
+#: a connection there is refused immediately rather than hanging until a timeout.
+UNREACHABLE_DATABASE_URL = (
+    "postgresql+asyncpg://tradewatch:tradewatch@127.0.0.1:1/tradewatch_unreachable"
+)
+
+
 @pytest.fixture
 def client(settings: Settings) -> Iterator[TestClient]:
     """A test client over the real application.
 
-    Startup registers the real database readiness check, and these tests run with no
-    database — so `/ready` legitimately reports 503 here. That is behaviour worth asserting
-    (failure F8), and `registry_client` exists for the tests that need to exercise the
-    readiness registry itself.
+    Startup registers the real database readiness check. Whether it passes depends on
+    whether a database happens to be reachable, so no test here asserts on `/ready` through
+    this fixture — `offline_client` exists for the unreachable case and `registry_client`
+    for the readiness registry itself.
     """
     clear_readiness_checks()
     with TestClient(create_app(settings)) as test_client:
+        yield test_client
+    clear_readiness_checks()
+
+
+@pytest.fixture
+def offline_client(settings: Settings) -> Iterator[TestClient]:
+    """A client whose database is unreachable by construction, not by circumstance.
+
+    Failure F8 says the API reports itself not ready when a dependency is down, and that is
+    worth a test. The obvious way to write it — assume no database is running — makes the
+    test pass or fail according to whether the developer happened to start Docker, and the
+    README tells them to. Pointing at a closed port instead means the test asserts the
+    behaviour it names, on every machine, whatever else is running.
+
+    The engine is lazy, so startup still succeeds; the failure surfaces where it should,
+    in the readiness check.
+    """
+    offline = settings.model_copy(
+        update={"database": DatabaseSettings(database_url=UNREACHABLE_DATABASE_URL)}
+    )
+    clear_readiness_checks()
+    with TestClient(create_app(offline)) as test_client:
         yield test_client
     clear_readiness_checks()
 

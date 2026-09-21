@@ -51,6 +51,9 @@ EXPECTED_TABLES = {
     "backtest_runs",
     "backtest_trades",
     "backtest_equity_points",
+    # Streaming bookkeeping. Not in §6 because it is not domain data: it is how an
+    # accumulating consumer records what it has already applied (ADR-0016).
+    "consumer_progress",
     # Detection and alerting (§6.3)
     "anomaly_detections",
     "model_versions",
@@ -179,8 +182,13 @@ class TestReversibility:
         Runs on its own database so a failure halfway cannot leave the shared test schema
         unusable for every other test in the session.
         """
-        scratch_url = str(engine.url).rsplit("/", 1)[0] + "/tradewatch_migration_check"
-        admin_url = str(engine.url).rsplit("/", 1)[0] + "/postgres"
+        # `str(url)` masks the password as `***`, so reconstructing a URL from it produces
+        # one that authenticates as the literal string "***". That works against a
+        # trust-auth PostgreSQL and fails against every other kind, which is a bad way to
+        # find out.
+        base = engine.url.render_as_string(hide_password=False).rsplit("/", 1)[0]
+        scratch_url = f"{base}/tradewatch_migration_check"
+        admin_url = f"{base}/postgres"
 
         from sqlalchemy.ext.asyncio import create_async_engine
 

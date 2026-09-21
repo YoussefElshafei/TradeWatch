@@ -336,6 +336,35 @@ class MarketDataProcessor:
             self._stats.flushes += 1
             return written
 
+    def discard_pending(self) -> int:
+        """Throw away whatever is buffered. Returns how many rows were dropped.
+
+        Added in Phase 2 for one specific situation: a batch the store rejects *permanently*
+        — a constraint violation, which will fail identically forever. Until there was a
+        Kafka consumer, the only caller was a process that was about to exit anyway, so the
+        buffer being retained was free diagnostic information. A consumer cannot exit: it
+        has to abandon the batch, quarantine what caused it, and keep its place in the
+        partition. Without this the buffer would still hold the poison rows and the next
+        flush would fail the same way, which is a partition stopped forever on one bad
+        message — exactly failure F3.
+
+        Deliberately **not** a quiet operation. Discarded rows are unaccounted for by
+        definition, so they are counted as unprocessable and logged at warning: a consumer
+        dropping data must never be something you have to read the code to discover.
+        """
+        dropped = len(self._buffer)
+        if not dropped:
+            return 0
+
+        self._stats.unprocessable += dropped
+        self._buffer.clear()
+        log.warning(
+            "processor.pending_discarded",
+            dropped=dropped,
+            total_unprocessable=self._stats.unprocessable,
+        )
+        return dropped
+
     async def _write_buffer(self) -> int:
         """One flush. Each `save_*` call is its own transaction."""
         offered = len(self._buffer)

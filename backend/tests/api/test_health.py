@@ -22,13 +22,16 @@ class TestHealth:
 
 
 class TestReadiness:
-    def test_reports_not_ready_when_the_database_is_unreachable(self, client: TestClient) -> None:
+    def test_reports_not_ready_when_the_database_is_unreachable(
+        self, offline_client: TestClient
+    ) -> None:
         """Failure F8: the API refuses traffic rather than failing request by request.
 
-        These tests run with no database, so the check registered at startup fails — which
-        is exactly what should happen.
+        `offline_client` points the application at a closed port, so the check registered
+        at startup fails for a reason this test controls rather than one the developer's
+        Docker happens to supply.
         """
-        response = client.get("/ready")
+        response = offline_client.get("/ready")
 
         assert response.status_code == 503
         body = response.json()

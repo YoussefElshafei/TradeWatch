@@ -11,6 +11,7 @@ Grouping, and where each group's design reasoning lives:
 * :mod:`~.trading` — strategies, portfolios, deployments, orders, fills, positions, equity
 * :mod:`~.backtesting` — backtest runs, trades, equity curves
 * :mod:`~.detection` — model versions, anomaly detections, alert rules, alerts
+* :mod:`~.streaming` — consumer progress, so an accumulating consumer is idempotent
 """
 
 from tradewatch.infrastructure.database.base import Base, metadata
@@ -31,6 +32,7 @@ from tradewatch.infrastructure.database.models.identity import (
     User,
 )
 from tradewatch.infrastructure.database.models.market import Bar, Instrument, Quote, Trade
+from tradewatch.infrastructure.database.models.streaming import ConsumerProgress
 from tradewatch.infrastructure.database.models.trading import (
     EquityPoint,
     Fill,
@@ -51,6 +53,7 @@ __all__ = [
     "BacktestTrade",
     "Bar",
     "Base",
+    "ConsumerProgress",
     "EquityPoint",
     "Fill",
     "Instrument",
