@@ -29,3 +29,16 @@ export const config: AppConfig = {
 export function apiUrl(path: string): string {
   return `${config.apiBaseUrl}${path.startsWith('/') ? path : `/${path}`}`;
 }
+
+/**
+ * The same host as the REST API, over `ws`/`wss` instead of `http`/`https` (Phase 4).
+ *
+ * There is no separate `VITE_WS_BASE_URL`: `/ws/market` is served by the same FastAPI
+ * process as `/api/v1/*`, so deriving it from `apiBaseUrl` is one fewer thing to configure
+ * and one fewer way for the two to drift apart in an environment file.
+ */
+export function wsUrl(path: string): string {
+  const url = new URL(apiUrl(path));
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}

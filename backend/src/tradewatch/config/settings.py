@@ -307,6 +307,10 @@ class KafkaSettings(_Group):
     #: entire argument for Kafka (ADR-0001). Sharing one would make the two services
     #: compete for partitions and each would see half the trades.
     kafka_aggregator_group: str = "bar-aggregator"
+    #: The broadcaster's group (Phase 4). A third independent reader of the same market
+    #: topics, for the same reason the aggregator is a second one: its own offsets mean a
+    #: broadcaster restart or lag never affects persistence or aggregation, and vice versa.
+    kafka_broadcast_group: str = "broadcaster"
     #: Where a brand-new group starts. "earliest", so a consumer added to an existing topic
     #: processes the history instead of silently skipping it.
     kafka_auto_offset_reset: str = "earliest"

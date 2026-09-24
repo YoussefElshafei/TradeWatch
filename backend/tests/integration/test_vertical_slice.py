@@ -36,6 +36,7 @@ from tradewatch.application.processing import MarketDataProcessor
 from tradewatch.config.settings import Settings
 from tradewatch.domain.enums import BarInterval
 from tradewatch.domain.events import BarEvent, MarketEvent, TradeEvent
+from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.infrastructure.events.memory import InMemoryEventBus
 from tradewatch.infrastructure.providers.normalization import EventFactory
 from tradewatch.infrastructure.providers.synthetic import SyntheticProvider, SyntheticScenario
@@ -52,7 +53,11 @@ SYMBOL = "SLICE1"
 
 @pytest_asyncio.fixture
 async def api(session: AsyncSession, settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
-    """An async ASGI client sharing the test's transaction and event loop."""
+    """An async ASGI client sharing the test's transaction and event loop.
+
+    `app.state.cache` is attached but left unconnected — see the identical note in
+    `tests/integration/test_market_api.py::api` for why.
+    """
     clear_readiness_checks()
     app = create_app(settings)
 
@@ -60,6 +65,7 @@ async def api(session: AsyncSession, settings: Settings) -> AsyncIterator[httpx.
         return session
 
     app.dependency_overrides[get_session] = _session_override
+    app.state.cache = RedisCache(settings.redis)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client

@@ -17,6 +17,9 @@ dependencies = [
     "httpx2>=2.13",
     "pydantic>=2.11",
     "pydantic-settings>=2.11",
+    # Phase 4 (ADR-0003): cache + WebSocket fan-out via Pub/Sub. redis-py ships its own
+    # asyncio client (`redis.asyncio`) since 4.2, so no separate aioredis package is needed.
+    "redis>=6.0",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=25.4",
     "tzdata>=2026.4",
@@ -31,6 +34,8 @@ tradewatch-producer = "tradewatch.workers.market_data_producer:main"
 tradewatch-consumer = "tradewatch.workers.market_data_consumer:main"
 # Phase 3: the second consumer group, and the history it needs (ADR-0001).
 tradewatch-aggregator = "tradewatch.workers.bar_aggregator:main"
+# Phase 4: Kafka -> Redis Pub/Sub fan-out, so /ws/market has something to relay.
+tradewatch-broadcaster = "tradewatch.workers.broadcaster:main"
 tradewatch-backfill = "tradewatch.workers.backfill:main"
 tradewatch-ingest = "tradewatch.workers.ingestion:main"
 # The Phase 1 single-process path, kept for development without a broker. No replay, no
@@ -97,6 +102,11 @@ ignore = [
     # from what autogenerate produces, and reviewing a migration means reading the SQL,
     # not admiring its wrapping.
     "E501",
+]
+"scripts/**" = [
+    # A CLI script's whole job is to print its result. structlog is for the services;
+    # a one-off benchmark's output is not a log line for something to parse.
+    "T201",
 ]
 
 [tool.ruff.lint.flake8-builtins]
@@ -243,3 +253,10 @@ source_modules = [
     "tradewatch.api",
 ]
 forbidden_modules = ["aiokafka", "kafka"]
+
+# Redis gets no equivalent "is an adapter" contract. Unlike Kafka, the API legitimately
+# holds a `RedisCache` directly on `app.state` (`api/app.py`, mirroring `Database`) — it
+# reads and writes the cache itself, on the request path, the same way it owns a database
+# session. `domain` already forbids `redis` directly ("frameworks" contract above), and
+# `application` already cannot reach it at all ("depends on ports, not adapters" above);
+# together those are the actual boundary this project draws around Redis.

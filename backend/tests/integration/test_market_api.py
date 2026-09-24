@@ -31,6 +31,7 @@ from tradewatch.config.settings import Settings
 from tradewatch.domain.entities import NewBar, NewTrade
 from tradewatch.domain.enums import BarInterval
 from tradewatch.domain.ids import new_id
+from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.infrastructure.database.models import Instrument
 from tradewatch.infrastructure.repositories import BarRepository, TradeRepository
 
@@ -53,6 +54,17 @@ async def api(session: AsyncSession, settings: Settings) -> AsyncIterator[httpx.
     **`get_session` is overridden** rather than pointing the app at the test database,
     because the fixtures never commit. The API has to join the *same* transaction to see
     what a test just wrote — and everything is rolled back afterwards.
+
+    **The cache is attached but never connected.** `app.state.cache` (Phase 4) is normally
+    set by the lifespan this fixture skips, and `CacheDep` raises if it is missing at all —
+    so a `RedisCache` still needs to be here. Leaving it unconnected rather than pointing it
+    at the real test Redis is deliberate: an unconnected `RedisCache` always misses on read
+    and no-ops on write (the same behaviour F9 defines for "Redis is down"), which is exactly
+    what these tests want. A *connected* shared cache would let one test's write leak into
+    another's assertions through Redis, even though PostgreSQL rolls every test back —
+    caching's own behaviour (hits, TTLs, invalidation) has its own isolated coverage in
+    `tests/integration/test_redis_cache.py` and `tests/unit/test_broadcast_service.py`; this
+    file is about the routes' database-backed correctness, not about caching.
     """
     clear_readiness_checks()
     app = create_app(settings)
@@ -61,6 +73,7 @@ async def api(session: AsyncSession, settings: Settings) -> AsyncIterator[httpx.
         return session
 
     app.dependency_overrides[get_session] = _session_override
+    app.state.cache = RedisCache(settings.redis)
 
     # The lifespan is deliberately not run: it would open a second engine against the
     # configured database, which the override makes unnecessary.

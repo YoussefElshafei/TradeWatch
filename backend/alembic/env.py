@@ -31,7 +31,15 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 load_env_file()
-config.set_main_option("sqlalchemy.url", DatabaseSettings().database_url)
+
+# Skip reading TW_DATABASE_URL when a connection is already provided (the test path, set
+# in tests/integration/conftest.py before invoking Alembic against an existing event loop
+# and transaction). That path never reads `sqlalchemy.url`, but building `DatabaseSettings`
+# here unconditionally still required TW_DATABASE_URL to be set — which is only true by
+# accident on a machine with a `.env` file. CI's integration job sets TW_TEST_DATABASE_URL,
+# not TW_DATABASE_URL, so this raised a raw, uncaught ValidationError before any test ran.
+if config.attributes.get("connection") is None:
+    config.set_main_option("sqlalchemy.url", DatabaseSettings().database_url)
 
 
 def include_object(

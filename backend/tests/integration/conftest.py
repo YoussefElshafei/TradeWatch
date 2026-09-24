@@ -97,11 +97,18 @@ async def engine() -> AsyncIterator[AsyncEngine]:
 
     # Start from nothing, so a schema left behind by an interrupted run cannot make a
     # broken migration look like it works.
-    async with engine.begin() as connection:
-        await connection.execute(text("DROP SCHEMA public CASCADE"))
-        await connection.execute(text("CREATE SCHEMA public"))
-    async with engine.begin() as connection:
-        await connection.run_sync(_run_migrations)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP SCHEMA public CASCADE"))
+            await connection.execute(text("CREATE SCHEMA public"))
+        async with engine.begin() as connection:
+            await connection.run_sync(_run_migrations)
+    except Exception:
+        # Undisposed here means every test in the session leaks this engine's connections,
+        # which is what turned one migration failure into ~200 unrelated ResourceWarning
+        # failures (filterwarnings turns them into errors) on top of the real one.
+        await engine.dispose()
+        raise
 
     yield engine
     await engine.dispose()

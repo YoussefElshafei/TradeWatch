@@ -24,11 +24,19 @@ router = APIRouter(tags=["ops"])
 
 #: name -> check. A check returns None when healthy, or a short reason when not.
 ReadinessCheck = Callable[[], Awaitable[str | None]]
-_CHECKS: dict[str, ReadinessCheck] = {}
+_CHECKS: dict[str, tuple[ReadinessCheck, bool]] = {}
 
 
-def register_readiness_check(name: str, check: ReadinessCheck) -> None:
+def register_readiness_check(name: str, check: ReadinessCheck, *, critical: bool = True) -> None:
     """Add a dependency check to `/ready`.
+
+    Args:
+        critical: Whether a failure here should turn `/ready` unhealthy (503) and stop a
+            load balancer sending traffic. PostgreSQL is critical — the API cannot serve a
+            correct response without it. Redis is not (failure F9: "degrade, never fail") —
+            a cache outage must never look like an outage to anything watching `/ready`,
+            which is exactly the failure mode F9 exists to rule out. A non-critical check
+            still appears in the response body, just never flips ``status``.
 
     Raises:
         ValueError: If a check is already registered under this name — silently replacing
@@ -36,7 +44,7 @@ def register_readiness_check(name: str, check: ReadinessCheck) -> None:
     """
     if name in _CHECKS:
         raise ValueError(f"readiness check {name!r} is already registered")
-    _CHECKS[name] = check
+    _CHECKS[name] = (check, critical)
 
 
 def clear_readiness_checks() -> None:
@@ -72,13 +80,13 @@ async def ready(response: Response) -> ReadinessResponse:
     """
     results: dict[str, str] = {}
     healthy = True
-    for name, check in _CHECKS.items():
+    for name, (check, critical) in _CHECKS.items():
         try:
             failure = await check()
         except Exception as exc:  # a check that raises is a check that failed
             failure = type(exc).__name__
         results[name] = "ok" if failure is None else failure
-        healthy = healthy and failure is None
+        healthy = healthy and (failure is None or not critical)
 
     if not healthy:
         response.status_code = 503

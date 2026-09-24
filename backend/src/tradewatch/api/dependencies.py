@@ -18,9 +18,18 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tradewatch.config.settings import Settings
+from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.infrastructure.database.session import Database
 
-__all__ = ["SessionDep", "SettingsDep", "get_database", "get_session", "get_settings_dep"]
+__all__ = [
+    "CacheDep",
+    "SessionDep",
+    "SettingsDep",
+    "get_cache",
+    "get_database",
+    "get_session",
+    "get_settings_dep",
+]
 
 
 def get_database(request: Request) -> Database:
@@ -51,5 +60,14 @@ async def get_session(
         yield session
 
 
+def get_cache(request: Request) -> RedisCache:
+    """The process-wide cache, attached to the app during startup (Phase 4)."""
+    cache = getattr(request.app.state, "cache", None)
+    if cache is None:
+        raise RuntimeError("the cache was not attached during application startup")
+    return cast("RedisCache", cache)
+
+
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
+CacheDep = Annotated[RedisCache, Depends(get_cache)]

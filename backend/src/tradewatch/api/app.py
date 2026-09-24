@@ -17,10 +17,12 @@ from fastapi.responses import JSONResponse
 
 from tradewatch import __version__
 from tradewatch.api.errors import error_response, install_exception_handlers
-from tradewatch.api.routes import health, market
+from tradewatch.api.routes import health, market, websocket
 from tradewatch.api.routes.health import clear_readiness_checks, register_readiness_check
+from tradewatch.api.routes.websocket import ConnectionManager
 from tradewatch.config.env import load_env_file
 from tradewatch.config.settings import Settings, get_settings
+from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.infrastructure.database.session import Database
 from tradewatch.observability.logging import (
     bind_request_context,
@@ -60,10 +62,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # not: a liveness probe that fails during a database outage turns it into a
         # restart loop (see routes/health.py).
         register_readiness_check("database", database.check)
+
+        cache = RedisCache(settings.redis)
+        await cache.connect()
+        app.state.cache = cache
+        # critical=False: a Redis outage must degrade (cache misses fall through to
+        # PostgreSQL, live updates pause), never flip `/ready` to 503 — that would turn a
+        # non-critical dependency into an outage, exactly what failure F9 forbids.
+        register_readiness_check("redis", cache.check, critical=False)
+
+        ws_manager = ConnectionManager(cache)
+        ws_manager.start()
+        app.state.ws_manager = ws_manager
+
         try:
             yield
         finally:
             clear_readiness_checks()
+            await ws_manager.stop()
+            await cache.disconnect()
             await database.disconnect()
             log.info("api.stopped")
 
@@ -123,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(market.router)
+    app.include_router(websocket.router)
     return app
 
 

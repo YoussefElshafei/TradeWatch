@@ -19,7 +19,7 @@
  * * **success** — the chart.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import {
   type BarSeries,
@@ -31,10 +31,31 @@ import {
   fetchLatestPrice,
 } from '../api/market';
 import { useAsync } from '../hooks/useAsync';
+import {
+  type ConnectionStatus,
+  type MarketSocketState,
+  useMarketSocket,
+} from '../hooks/useMarketSocket';
 import { formatMoney } from '../lib/format';
 import { PriceChart } from './PriceChart';
 
 const BAR_LIMIT = 240;
+
+const STATUS_LABEL: Record<ConnectionStatus, string> = {
+  connecting: 'Connecting…',
+  open: 'Live',
+  reconnecting: 'Reconnecting…',
+  closed: 'Offline',
+};
+
+function LiveBadge({ status }: { status: ConnectionStatus }) {
+  return (
+    <span className={`live-badge live-badge-${status}`} role="status">
+      <span aria-hidden="true" className="live-dot" />
+      {STATUS_LABEL[status]}
+    </span>
+  );
+}
 
 function Message({
   tone,
@@ -60,29 +81,46 @@ function Message({
   );
 }
 
-function LatestPricePanel({ symbol }: { symbol: string }) {
-  const { state } = useAsync<LatestPrice>(
+function LatestPricePanel({
+  symbol,
+  socket,
+}: {
+  symbol: string;
+  socket: MarketSocketState;
+}) {
+  const { state, reload } = useAsync<LatestPrice>(
     useCallback((signal) => fetchLatestPrice(symbol, signal), [symbol]),
     [symbol],
   );
 
+  // The socket told us we may have missed messages (F19) — the REST endpoint is the source
+  // of truth this feed only ever supplements, so re-fetch it rather than trying to guess
+  // what was lost.
+  useEffect(() => {
+    if (socket.resyncedAt) reload();
+    // `reload` is re-created every render; only a *new* resync should trigger this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket.resyncedAt]);
+
   if (state.status !== 'success') return null;
   const latest = state.data;
+
+  // A live trade/quote always wins over the REST snapshot once one has arrived: it is
+  // strictly newer than whatever `fetchLatestPrice` returned, by construction.
+  const price = socket.latestTrade?.price ?? latest.price;
+  const bid = socket.latestQuote?.bid_price ?? latest.bid_price;
+  const ask = socket.latestQuote?.ask_price ?? latest.ask_price;
 
   return (
     <dl className="quote" aria-label={`${symbol} latest price`}>
       <div>
         <dt>Last</dt>
-        <dd data-testid="latest-price">
-          {latest.price ? formatMoney(latest.price) : 'no trades yet'}
-        </dd>
+        <dd data-testid="latest-price">{price ? formatMoney(price) : 'no trades yet'}</dd>
       </div>
       <div>
         <dt>Bid / Ask</dt>
         <dd>
-          {latest.bid_price && latest.ask_price
-            ? `${formatMoney(latest.bid_price)} / ${formatMoney(latest.ask_price)}`
-            : 'no quotes yet'}
+          {bid && ask ? `${formatMoney(bid)} / ${formatMoney(ask)}` : 'no quotes yet'}
         </dd>
       </div>
       <div>
@@ -90,6 +128,33 @@ function LatestPricePanel({ symbol }: { symbol: string }) {
         <dd>{latest.source ?? 'unknown'}</dd>
       </div>
     </dl>
+  );
+}
+
+function TradeTape({
+  symbol,
+  trades,
+}: {
+  symbol: string;
+  trades: MarketSocketState['trades'];
+}) {
+  if (trades.length === 0) return null;
+
+  return (
+    <div className="panel trade-tape" aria-label={`${symbol} recent trades`}>
+      <p className="panel-title">Trade tape</p>
+      <ul>
+        {trades.map((trade) => (
+          <li key={trade.tapeKey}>
+            <span className="trade-tape-time">
+              {new Date(trade.occurred_at).toLocaleTimeString()}
+            </span>
+            <span className="trade-tape-price">{formatMoney(trade.price)}</span>
+            <span className="trade-tape-size">×{formatMoney(trade.size)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -122,11 +187,22 @@ function SymbolSelector({
   );
 }
 
-function BarsPanel({ symbol }: { symbol: string }) {
+function BarsPanel({ symbol, socket }: { symbol: string; socket: MarketSocketState }) {
   const { state, reload } = useAsync<BarSeries>(
     useCallback((signal) => fetchBars({ symbol, limit: BAR_LIMIT }, signal), [symbol]),
     [symbol],
   );
+
+  // A closed bar just landed, or the socket dropped a backlog (F19): either way, the
+  // cached-then-invalidated REST series (see `application/broadcasting/service.py`) is
+  // fresher than what is on screen. `latestBar` fires often at live market rates, so this
+  // refetches the *chart*, not on every trade — the price panel above updates every tick on
+  // its own, from the socket directly, with no REST round trip.
+  useEffect(() => {
+    if (socket.latestBar || socket.resyncedAt) reload();
+    // See LatestPricePanel's identical note: `reload` is intentionally not a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket.latestBar, socket.resyncedAt]);
 
   if (state.status === 'loading') {
     return <Message tone="info" title={`Loading ${symbol}…`} />;
@@ -164,6 +240,19 @@ export function MarketView() {
     [],
   );
 
+  // Falling back to the first instrument rather than storing it in state keeps the source
+  // of truth in one place: a symbol that disappears from the list cannot leave the view
+  // pointing at nothing.
+  const instruments = state.status === 'success' ? state.data.instruments : [];
+  // `selected` starts as `''`, which is deliberately falsy-but-not-nullish here, so this
+  // stays an explicit emptiness check rather than `??` (which would not treat `''` as
+  // "nothing chosen yet" and never fall back to the first instrument).
+  const symbol = selected !== '' ? selected : (instruments[0]?.symbol ?? '');
+
+  // Called unconditionally, before the early returns below, because hooks must run in the
+  // same order every render — `useMarketSocket` itself no-ops until `symbol` resolves.
+  const socket = useMarketSocket(symbol);
+
   if (state.status === 'loading') {
     return <Message tone="info" title="Loading instruments…" />;
   }
@@ -179,9 +268,7 @@ export function MarketView() {
     );
   }
 
-  const instruments = state.data.instruments;
-  const [firstInstrument] = instruments;
-  if (!firstInstrument) {
+  if (!symbol) {
     return (
       <Message
         tone="info"
@@ -192,23 +279,22 @@ export function MarketView() {
     );
   }
 
-  // Falling back to the first instrument rather than storing it in state keeps the source
-  // of truth in one place: a symbol that disappears from the list cannot leave the view
-  // pointing at nothing.
-  const symbol = selected || firstInstrument.symbol;
-
   return (
     <section className="market" aria-labelledby="market-heading">
       <div className="market-header">
         <h2 id="market-heading">{symbol}</h2>
-        <SymbolSelector
-          instruments={instruments}
-          selected={symbol}
-          onSelect={setSelected}
-        />
+        <div className="market-header-controls">
+          <LiveBadge status={socket.status} />
+          <SymbolSelector
+            instruments={instruments}
+            selected={symbol}
+            onSelect={setSelected}
+          />
+        </div>
       </div>
-      <LatestPricePanel symbol={symbol} />
-      <BarsPanel symbol={symbol} />
+      <LatestPricePanel symbol={symbol} socket={socket} />
+      <BarsPanel symbol={symbol} socket={socket} />
+      <TradeTape symbol={symbol} trades={socket.trades} />
     </section>
   );
 }
