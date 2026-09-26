@@ -15,6 +15,8 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import { AuthProvider } from '../hooks/useAuth';
+import { TOKEN_RESPONSE } from '../test-support/authFixtures';
 import { requestUrl } from '../test-support/requestUrl';
 
 import { MarketView } from './MarketView';
@@ -100,6 +102,12 @@ function stubApi({
       const respond = (body: unknown) =>
         Promise.resolve(new Response(JSON.stringify(body), { status }));
 
+      // `AuthProvider` (Phase 5) calls this on mount, independent of everything else this
+      // stub routes — always a real session, never subject to the `status` override above,
+      // since these tests are about the market data states, not the auth ones.
+      if (url.includes('/auth/refresh')) {
+        return Promise.resolve(new Response(JSON.stringify(TOKEN_RESPONSE)));
+      }
       if (url.includes('/instruments')) return respond(instruments);
       if (url.includes('/latest')) return respond(latest);
       if (url.includes('/bars')) {
@@ -114,11 +122,20 @@ function stubApi({
   return calls;
 }
 
+/** `MarketView` reads `useAuth()` (Phase 5), so every render needs a provider above it. */
+function renderMarketView() {
+  return render(
+    <AuthProvider>
+      <MarketView />
+    </AuthProvider>,
+  );
+}
+
 describe('MarketView', () => {
   it('shows a loading state before anything arrives', () => {
     stubApi({});
 
-    render(<MarketView />);
+    renderMarketView();
 
     expect(screen.getByRole('status')).toHaveTextContent(/loading/i);
   });
@@ -126,7 +143,7 @@ describe('MarketView', () => {
   it('renders a chart from data the API returned', async () => {
     stubApi({});
 
-    render(<MarketView />);
+    renderMarketView();
 
     const chart = await screen.findByLabelText('AAPL price chart');
     expect(chart).toBeInTheDocument();
@@ -139,7 +156,7 @@ describe('MarketView', () => {
   it('shows the latest price without reformatting it', async () => {
     stubApi({});
 
-    render(<MarketView />);
+    renderMarketView();
 
     // 187.42, not 187.42000000 and not a float's rendering of it.
     expect(await screen.findByTestId('latest-price')).toHaveTextContent('187.42');
@@ -148,7 +165,7 @@ describe('MarketView', () => {
   it('lists every instrument in the selector', async () => {
     stubApi({});
 
-    render(<MarketView />);
+    renderMarketView();
 
     const selector = await screen.findByRole('combobox', { name: /symbol/i });
     expect(within(selector).getAllByRole('option')).toHaveLength(2);
@@ -157,7 +174,7 @@ describe('MarketView', () => {
   it('loads a different symbol when one is selected', async () => {
     const calls = stubApi({});
     const user = userEvent.setup();
-    render(<MarketView />);
+    renderMarketView();
     await screen.findByLabelText('AAPL price chart');
 
     await user.selectOptions(
@@ -174,7 +191,7 @@ describe('MarketView', () => {
   it('shows an empty state rather than an error when there is no data', async () => {
     stubApi({ bars: (symbol) => barsFor(symbol, []) });
 
-    render(<MarketView />);
+    renderMarketView();
 
     // A known symbol with no bars is a quiet market, not a failure.
     expect(await screen.findByText(/no bars for aapl/i)).toBeInTheDocument();
@@ -187,7 +204,7 @@ describe('MarketView', () => {
       vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
     );
 
-    render(<MarketView />);
+    renderMarketView();
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/could not reach/i);
@@ -214,7 +231,7 @@ describe('MarketView', () => {
       }),
     );
 
-    render(<MarketView />);
+    renderMarketView();
 
     expect(await screen.findByText(/unknown symbol 'aapl'/i)).toBeInTheDocument();
   });
@@ -242,7 +259,7 @@ describe('MarketView', () => {
         return Promise.resolve(new Response(JSON.stringify(barsFor('AAPL', ['100.00']))));
       }),
     );
-    render(<MarketView />);
+    renderMarketView();
     const alert = await screen.findByRole('alert');
 
     await user.click(within(alert).getByRole('button', { name: /try again/i }));
@@ -255,7 +272,7 @@ describe('MarketView', () => {
   it('handles an empty instrument universe', async () => {
     stubApi({ instruments: { count: 0, instruments: [] } });
 
-    render(<MarketView />);
+    renderMarketView();
 
     expect(await screen.findByText(/no instruments yet/i)).toBeInTheDocument();
   });

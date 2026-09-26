@@ -9,12 +9,13 @@ holds exactly one Redis subscription (`RedisCache.subscribe`) and fans a message
 in-process to every connected client currently interested in that message's symbol — not one
 Redis subscription per client, which would not scale with the number of open browser tabs.
 
-**No authentication yet.** `ARCHITECTURE.md` §8.2 specifies this channel as "Authenticated" —
-that is the *finished-system* design (see `docs/PROJECT_STATE.md` §0 on reading that document
-as a target, not a description). Auth is Phase 5; market data is unauthenticated everywhere
-else in this codebase today (every `GET /api/v1/market/*` route is open), so an unauthenticated
-`/ws/market` is consistent with the rest of the API as it exists right now, not a gap specific
-to this endpoint. Revisit this the moment Phase 5 lands.
+**Authentication (Phase 5, ADR-0010).** The token travels as a `?token=` query parameter,
+not an `Authorization` header — a browser's `WebSocket` constructor cannot set custom headers,
+so a query parameter is the only place a bearer token can go on the request that opens the
+connection. It is verified during the handshake, *before* `.accept()`, and the connection is
+also **closed the instant the token's own `exp` arrives**, not only checked at connect — a
+long-lived socket outliving the credential that opened it is the detail ADR-0010 calls out as
+"the detail most implementations get wrong."
 
 **Slow-consumer handling (failure F19).** Every connection gets a small bounded queue. The
 fan-out loop below always uses ``put_nowait`` and never ``await``s a slow client's socket —
@@ -29,14 +30,24 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from starlette import status
+from starlette.websockets import WebSocketState
 
+from tradewatch.application.auth import (
+    ExpiredAccessTokenError,
+    InvalidAccessTokenError,
+    decode_access_token,
+    revoked_key,
+)
 from tradewatch.application.broadcasting import BROADCAST_CHANNEL
+from tradewatch.config.settings import Settings
 from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.observability.logging import get_logger
 
@@ -152,9 +163,76 @@ def get_manager(websocket: WebSocket) -> ConnectionManager:
     return manager  # type: ignore[no-any-return]
 
 
+def _get_settings(websocket: WebSocket) -> Settings:
+    """`api/dependencies.get_settings_dep`'s WebSocket-flavoured twin.
+
+    Not `Depends(get_settings_dep)`: that dependency is typed to take an HTTP `Request`,
+    and a WebSocket connection is a different ASGI scope — `app.state` is the same object
+    either way, so reading it directly here is not a shortcut, it is the only path that
+    exists for a `websocket` route.
+    """
+    settings = getattr(websocket.app.state, "settings", None)
+    if settings is None:
+        raise RuntimeError("settings were not attached to the application")
+    return settings  # type: ignore[no-any-return]
+
+
+def _get_cache(websocket: WebSocket) -> RedisCache:
+    cache = getattr(websocket.app.state, "cache", None)
+    if cache is None:
+        raise RuntimeError("the cache was not attached during application startup")
+    return cache  # type: ignore[no-any-return]
+
+
+async def _authenticate(websocket: WebSocket, token: str | None) -> dt.datetime | None:
+    """Verify the token before `.accept()`, per ADR-0010. Returns its expiry, or `None`
+    after having already closed the connection — the caller's cue to stop.
+    """
+    if token is None:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="Authentication required."
+        )
+        return None
+
+    settings = _get_settings(websocket)
+    try:
+        claims = decode_access_token(token, secret=settings.security.jwt_secret.get_secret_value())
+    except (ExpiredAccessTokenError, InvalidAccessTokenError):
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="Invalid or expired token."
+        )
+        return None
+
+    cache = _get_cache(websocket)
+    if await cache.get_json(revoked_key(claims.jti)) is not None:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION, reason="Token has been revoked."
+        )
+        return None
+
+    return claims.expires_at
+
+
+async def _close_when_expired(websocket: WebSocket, expires_at: dt.datetime) -> None:
+    """A socket must not outlive its credential (ADR-0010) — enforced continuously, not
+    only at connect, which is the detail the ADR calls out as easy to get wrong.
+    """
+    remaining = (expires_at - dt.datetime.now(dt.UTC)).total_seconds()
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+    if websocket.client_state == WebSocketState.CONNECTED:
+        log.info("websocket.token_expired")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Token has expired.")
+
+
 @router.websocket("/ws/market")
 async def market_stream(
     websocket: WebSocket,
+    token: str | None = Query(
+        default=None,
+        description="Access token. A browser WebSocket cannot set an Authorization header, "
+        "so it travels here instead.",
+    ),
     symbols: str | None = Query(default=None, description="Comma-separated initial symbols."),
 ) -> None:
     """Subscribe to live trades, quotes and closed bars for one or more symbols.
@@ -164,6 +242,10 @@ async def market_stream(
     change the watchlist at any time. The `symbols` query parameter is an optional shortcut
     for the common case of "subscribe to these from the start."
     """
+    expires_at = await _authenticate(websocket, token)
+    if expires_at is None:
+        return
+
     manager = get_manager(websocket)
     await websocket.accept()
     connection_id, queue = manager.register()
@@ -172,6 +254,7 @@ async def market_stream(
         manager.subscribe(connection_id, initial)
 
     sender = asyncio.create_task(_send_loop(websocket, queue))
+    watchdog = asyncio.create_task(_close_when_expired(websocket, expires_at))
     try:
         while True:
             raw = await websocket.receive_text()
@@ -180,8 +263,11 @@ async def market_stream(
         pass
     finally:
         sender.cancel()
+        watchdog.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sender
+        with contextlib.suppress(asyncio.CancelledError):
+            await watchdog
         manager.unregister(connection_id)
 
 

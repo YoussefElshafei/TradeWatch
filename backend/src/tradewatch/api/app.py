@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from tradewatch import __version__
 from tradewatch.api.errors import error_response, install_exception_handlers
-from tradewatch.api.routes import health, market, websocket
+from tradewatch.api.routes import auth, health, market, websocket
 from tradewatch.api.routes.health import clear_readiness_checks, register_readiness_check
 from tradewatch.api.routes.websocket import ConnectionManager
 from tradewatch.config.env import load_env_file
@@ -35,6 +35,32 @@ from tradewatch.observability.logging import (
 REQUEST_ID_HEADER = "X-Request-ID"
 
 log = get_logger(__name__)
+
+#: The three FastAPI's own docs UI needs a CDN for (`ARCHITECTURE.md` §9.4 names CSP as one
+#: of the headers "set at the edge", but the edge also serves `/docs` and `/redoc`, which
+#: load Swagger/ReDoc's JS and CSS from jsDelivr — a CSP tight enough to be worth having on
+#: the JSON API would break them). Every other response gets the strict policy below instead.
+_DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"})
+
+
+def _security_headers(request: Request) -> dict[str, str]:
+    """`ARCHITECTURE.md` §9.4: HSTS, CSP, `X-Content-Type-Options`, frame-deny.
+
+    A JSON API serves no scripts, styles, or frames of its own, so `default-src 'none'` is
+    not a compromise here the way it would be for a page-serving app — it is simply correct.
+    `Strict-Transport-Security` sent over plain HTTP is inert (browsers only honour it on a
+    response already received over TLS), so there is no local-dev-vs-prod branch to get
+    wrong by forgetting it.
+    """
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+        "Referrer-Policy": "no-referrer",
+    }
+    if request.url.path not in _DOCS_PATHS:
+        headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    return headers
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -133,12 +159,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ),
                 )
             response.headers[REQUEST_ID_HEADER] = request_id
+            for name, value in _security_headers(request).items():
+                response.headers[name] = value
             return response
         finally:
             clear_request_context()
 
     install_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(market.router)
     app.include_router(websocket.router)
     return app

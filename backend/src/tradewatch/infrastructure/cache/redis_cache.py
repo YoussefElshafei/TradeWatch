@@ -129,6 +129,35 @@ class RedisCache:
         except _REDIS_ERRORS as error:
             log.warning("cache.delete_failed", keys=list(keys), error=str(error))
 
+    # --- Rate limiting (Phase 5, `ARCHITECTURE.md` §9.4/§10) ---------------------
+
+    async def increment_with_expiry(self, key: str, *, ttl_seconds: int) -> int:
+        """Atomically increment a fixed-window counter, returns the new count.
+
+        `INCR` then `EXPIRE ... NX` in one pipeline (transactional by default in redis-py):
+        the TTL is set only on the increment that creates the key, so a counter already
+        mid-window is never granted extra life by a later request. A real first increment
+        always returns at least 1 — **0 is reserved to mean "could not increment"** (Redis
+        unreachable), so the caller can tell "the count is genuinely zero" apart from "the
+        count is unknown" without a separate signal.
+
+        Failure F9: an unreachable Redis makes the rate limiter fail *open*, same as it
+        makes the cache fail to a miss. Refusing every request because the counter cannot
+        be read would turn a Redis outage into a self-inflicted denial of service, which is
+        a worse failure than temporarily not rate-limiting.
+        """
+        if self._client is None:
+            return 0
+        try:
+            async with self._client.pipeline(transaction=True) as pipe:
+                pipe.incr(key)
+                pipe.expire(key, ttl_seconds, nx=True)
+                results = await pipe.execute()
+            return int(results[0])
+        except _REDIS_ERRORS as error:
+            log.warning("cache.rate_limit_failed", key=key, error=str(error))
+            return 0
+
     # --- EventBroadcaster --------------------------------------------------------
 
     async def publish(self, channel: str, message: dict[str, object]) -> None:

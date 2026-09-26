@@ -5,6 +5,11 @@ Nothing above this layer builds a query. That is what makes the ownership rule i
 """
 
 from tradewatch.infrastructure.repositories.base import OwnedRepository, Repository
+from tradewatch.infrastructure.repositories.identity import (
+    AuditLogRepository,
+    RefreshTokenRepository,
+    UserRepository,
+)
 from tradewatch.infrastructure.repositories.market import (
     BarRepository,
     InstrumentRepository,
@@ -21,6 +26,7 @@ from tradewatch.infrastructure.repositories.trading import (
 )
 
 __all__ = [
+    "AuditLogRepository",
     "BacktestRunRepository",
     "BarRepository",
     "DeploymentRepository",
@@ -30,7 +36,9 @@ __all__ = [
     "PortfolioRepository",
     "PositionRepository",
     "QuoteRepository",
+    "RefreshTokenRepository",
     "Repository",
     "StrategyRepository",
     "TradeRepository",
+    "UserRepository",
 ]

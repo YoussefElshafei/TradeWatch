@@ -33,6 +33,8 @@ from alembic.config import Config
 from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
+from tradewatch.application.auth import create_access_token
+from tradewatch.config.settings import Settings
 from tradewatch.domain.entities import NewBar, NewQuote, NewTrade
 from tradewatch.domain.enums import AssetClass, UserRole
 from tradewatch.domain.ids import new_id
@@ -211,6 +213,39 @@ async def other_user(session: AsyncSession, user_factory: Any) -> User:
     session.add(row)
     await session.flush()
     return row
+
+
+@pytest.fixture
+def auth_headers_for(settings: Settings) -> Callable[[User], dict[str, str]]:
+    """Test scaffolding for Phase 6/7 (ADR-0010): a valid `Authorization` header for any
+    `User` row, so an HTTP-level owner-scoped route test can be written the moment the route
+    exists, without duplicating token-minting in every test file.
+
+    The pattern every such endpoint needs, once it exists:
+
+        async def test_user_b_gets_404_on_user_as_resource(
+            api, other_user, strategy, auth_headers_for
+        ):
+            response = await api.get(
+                f"/api/v1/strategies/{strategy.id}", headers=auth_headers_for(other_user)
+            )
+            assert response.status_code == 404  # never 403 — see OwnedRepository.get_for
+
+    The repository layer this ultimately calls into is already covered by `TestOwnership`
+    in `test_repositories.py`; what this fixture adds is the HTTP-level assertion that a
+    route actually passes the *right* actor through to it.
+    """
+
+    def build(user: User) -> dict[str, str]:
+        token = create_access_token(
+            user_id=user.id,
+            role=user.role,
+            secret=settings.security.jwt_secret.get_secret_value(),
+            ttl_minutes=settings.security.access_token_ttl_min,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    return build
 
 
 @pytest_asyncio.fixture

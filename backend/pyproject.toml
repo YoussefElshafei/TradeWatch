@@ -12,10 +12,20 @@ license = { text = "MIT" }
 dependencies = [
     "aiokafka>=0.12",
     "alembic>=1.16",
+    # Phase 5 (ADR-0010): Argon2id password hashing. The reference implementation — a
+    # ctypes/cffi binding to the C library the Argon2 competition winners maintain, not a
+    # pure-Python reimplementation of a KDF that is deliberately expensive to get right.
+    "argon2-cffi>=25.1",
     "asyncpg>=0.30",
     "fastapi>=0.118",
     "httpx2>=2.13",
-    "pydantic>=2.11",
+    # Phase 5 (ADR-0010): JWT access tokens. The most-used pure-Python JWT library, HS256
+    # support built in, no extra crypto backend needed for the symmetric algorithm this
+    # phase uses.
+    "pyjwt>=2.10",
+    # [email] pulls in `email-validator` for `EmailStr` (Phase 5 registration/login
+    # requests) — RFC-compliant address validation rather than a hand-rolled regex.
+    "pydantic[email]>=2.11",
     "pydantic-settings>=2.11",
     # Phase 4 (ADR-0003): cache + WebSocket fan-out via Pub/Sub. redis-py ships its own
     # asyncio client (`redis.asyncio`) since 4.2, so no separate aioredis package is needed.

@@ -11,22 +11,34 @@ import { FakeWebSocket } from '../test-support/fakeWebSocket';
 
 import { useMarketSocket } from './useMarketSocket';
 
+const TOKEN = 'test-access-token';
+
 describe('useMarketSocket', () => {
   it('does nothing until a symbol is given', () => {
-    const { result } = renderHook(() => useMarketSocket(''));
+    const { result } = renderHook(() => useMarketSocket('', TOKEN));
 
     expect(result.current.status).toBe('closed');
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
-  it('connects to /ws/market with the symbol in the query string', () => {
-    renderHook(() => useMarketSocket('AAPL'));
+  it('does nothing until a token is available (Phase 5: /ws/market requires one)', () => {
+    const { result } = renderHook(() => useMarketSocket('AAPL', null));
 
-    expect(FakeWebSocket.latest().url).toContain('/ws/market?symbols=AAPL');
+    expect(result.current.status).toBe('closed');
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('connects to /ws/market with the symbol and token in the query string', () => {
+    renderHook(() => useMarketSocket('AAPL', TOKEN));
+
+    const url = FakeWebSocket.latest().url;
+    expect(url).toContain('/ws/market?');
+    expect(url).toContain('symbols=AAPL');
+    expect(url).toContain(`token=${TOKEN}`);
   });
 
   it('reports "open" once the socket connects', async () => {
-    const { result } = renderHook(() => useMarketSocket('AAPL'));
+    const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
 
     act(() => {
       FakeWebSocket.latest().open();
@@ -38,7 +50,7 @@ describe('useMarketSocket', () => {
   });
 
   it('records a live trade as both the latest trade and the head of the tape', async () => {
-    const { result } = renderHook(() => useMarketSocket('AAPL'));
+    const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
     act(() => {
       FakeWebSocket.latest().open();
     });
@@ -61,7 +73,7 @@ describe('useMarketSocket', () => {
   });
 
   it('does not duplicate a redelivered trade on the tape (broadcaster restart, F9/at-least-once)', async () => {
-    const { result } = renderHook(() => useMarketSocket('AAPL'));
+    const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
     act(() => {
       FakeWebSocket.latest().open();
     });
@@ -95,7 +107,7 @@ describe('useMarketSocket', () => {
   });
 
   it('does not dedupe two different trades that happen to share nothing but a symbol', async () => {
-    const { result } = renderHook(() => useMarketSocket('AAPL'));
+    const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
     act(() => {
       FakeWebSocket.latest().open();
     });
@@ -127,7 +139,7 @@ describe('useMarketSocket', () => {
   });
 
   it('updates the latest quote independently of trades', async () => {
-    const { result } = renderHook(() => useMarketSocket('AAPL'));
+    const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
     act(() => {
       FakeWebSocket.latest().open();
     });
@@ -149,7 +161,7 @@ describe('useMarketSocket', () => {
   });
 
   it('bumps resyncedAt on a resync marker, without touching the trade tape', async () => {
-    const { result } = renderHook(() => useMarketSocket('AAPL'));
+    const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
     act(() => {
       FakeWebSocket.latest().open();
     });
@@ -180,7 +192,7 @@ describe('useMarketSocket', () => {
   it('reconnects after the socket closes', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      const { result } = renderHook(() => useMarketSocket('AAPL'));
+      const { result } = renderHook(() => useMarketSocket('AAPL', TOKEN));
       act(() => {
         FakeWebSocket.latest().open();
       });
@@ -208,7 +220,7 @@ describe('useMarketSocket', () => {
   });
 
   it('resets trade history when the symbol changes', async () => {
-    const { result, rerender } = renderHook(({ symbol }) => useMarketSocket(symbol), {
+    const { result, rerender } = renderHook(({ symbol }) => useMarketSocket(symbol, TOKEN), {
       initialProps: { symbol: 'AAPL' },
     });
     act(() => {

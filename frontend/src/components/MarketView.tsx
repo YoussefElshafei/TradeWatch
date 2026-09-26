@@ -31,6 +31,7 @@ import {
   fetchLatestPrice,
 } from '../api/market';
 import { useAsync } from '../hooks/useAsync';
+import { useAuth } from '../hooks/useAuth';
 import {
   type ConnectionStatus,
   type MarketSocketState,
@@ -250,8 +251,10 @@ export function MarketView() {
   const symbol = selected !== '' ? selected : (instruments[0]?.symbol ?? '');
 
   // Called unconditionally, before the early returns below, because hooks must run in the
-  // same order every render — `useMarketSocket` itself no-ops until `symbol` resolves.
-  const socket = useMarketSocket(symbol);
+  // same order every render — `useMarketSocket` itself no-ops until `symbol` and
+  // `accessToken` both resolve (Phase 5: `/ws/market` now requires one).
+  const { accessToken } = useAuth();
+  const socket = useMarketSocket(symbol, accessToken);
 
   if (state.status === 'loading') {
     return <Message tone="info" title="Loading instruments…" />;

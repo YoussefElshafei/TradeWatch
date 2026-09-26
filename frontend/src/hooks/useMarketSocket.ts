@@ -184,7 +184,15 @@ function reducer(state: InternalState, action: Action): InternalState {
   }
 }
 
-export function useMarketSocket(symbol: string): MarketSocketState {
+/**
+ * @param symbol The symbol to subscribe to.
+ * @param token A current access token (Phase 5, ADR-0010). `/ws/market` verifies it during
+ *   the handshake and closes the connection the instant it expires — a browser `WebSocket`
+ *   cannot set an `Authorization` header, so it travels as a query parameter instead
+ *   (`api/routes/websocket.py`). `null` while `useAuth` is still resolving the session means
+ *   this hook simply does not connect yet, the same way it already waits for `symbol`.
+ */
+export function useMarketSocket(symbol: string, token: string | null): MarketSocketState {
   const [state, dispatch] = useReducer(reducer, initialState);
 
   // A ref, not state: attempt count drives reconnect timing and must not itself trigger a
@@ -195,10 +203,11 @@ export function useMarketSocket(symbol: string): MarketSocketState {
     dispatch({ type: 'symbol_changed' });
     attemptRef.current = 0;
 
-    // No symbol resolved yet (the instrument list is still loading) — nothing to subscribe
-    // to. `MarketView` calls this hook unconditionally (rules of hooks), before it knows
-    // whether a symbol exists, so this guard belongs here rather than at the call site.
-    if (!symbol) {
+    // No symbol resolved yet, or no token yet (the session is still loading, or refreshing
+    // after an expiry) — nothing to subscribe with. `MarketView` calls this hook
+    // unconditionally (rules of hooks), before either is necessarily known, so the guard
+    // belongs here rather than at the call site.
+    if (!symbol || !token) {
       dispatch({ type: 'status', status: 'closed' });
       return undefined;
     }
@@ -212,7 +221,7 @@ export function useMarketSocket(symbol: string): MarketSocketState {
         type: 'status',
         status: attemptRef.current === 0 ? 'connecting' : 'reconnecting',
       });
-      const params = new URLSearchParams({ symbols: symbol });
+      const params = new URLSearchParams({ symbols: symbol, token: token ?? '' });
       socket = new WebSocket(`${wsUrl('/ws/market')}?${params.toString()}`);
 
       socket.onopen = () => {
@@ -254,7 +263,13 @@ export function useMarketSocket(symbol: string): MarketSocketState {
       dispatch({ type: 'status', status: 'closed' });
       socket?.close();
     };
-  }, [symbol]);
+    // Reconnecting on every `token` rotation (roughly every 14.5 minutes — see `useAuth`'s
+    // refresh margin) rather than only at actual expiry is the simpler of two correct
+    // options: the alternative is a token kept in a ref so only a *stale* connection reads
+    // the new value, which buys smoother reconnects at the cost of a second moving part.
+    // Worth it if the periodic "connecting" flicker this causes is ever reported as
+    // noticeable; skipped here as the simplest thing that is still correct.
+  }, [symbol, token]);
 
   return state;
 }
