@@ -58,7 +58,7 @@ function LiveBadge({ status }: { status: ConnectionStatus }) {
   );
 }
 
-function Message({
+export function Message({
   tone,
   title,
   detail,

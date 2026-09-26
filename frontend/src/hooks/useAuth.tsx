@@ -61,10 +61,18 @@ const REFRESH_MARGIN_SECONDS = 30;
 //: misconfigured deployment) must not turn this into a refresh-on-every-render loop.
 const MIN_REFRESH_DELAY_SECONDS = 5;
 
-const UNAUTHENTICATED: AuthState = { status: 'unauthenticated', user: null, accessToken: null };
+const UNAUTHENTICATED: AuthState = {
+  status: 'unauthenticated',
+  user: null,
+  accessToken: null,
+};
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AuthState>({ status: 'loading', user: null, accessToken: null });
+  const [state, setState] = useState<AuthState>({
+    status: 'loading',
+    user: null,
+    accessToken: null,
+  });
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A ref to `scheduleRefresh` itself, reassigned every render. The scheduled callback below
   // reads through this rather than closing over `scheduleRefresh` directly — a function
@@ -76,11 +84,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const scheduleRefresh = useCallback((expiresInSeconds: number) => {
     clearTimeout(refreshTimer.current);
-    const delaySeconds = Math.max(expiresInSeconds - REFRESH_MARGIN_SECONDS, MIN_REFRESH_DELAY_SECONDS);
+    const delaySeconds = Math.max(
+      expiresInSeconds - REFRESH_MARGIN_SECONDS,
+      MIN_REFRESH_DELAY_SECONDS,
+    );
     refreshTimer.current = setTimeout(() => {
       refreshSession()
         .then((tokens) => {
-          setState({ status: 'authenticated', user: tokens.user, accessToken: tokens.access_token });
+          setState({
+            status: 'authenticated',
+            user: tokens.user,
+            accessToken: tokens.access_token,
+          });
           scheduleRefreshRef.current?.(tokens.expires_in);
         })
         .catch(() => {
@@ -99,7 +114,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshSession()
       .then((tokens) => {
         if (cancelled) return;
-        setState({ status: 'authenticated', user: tokens.user, accessToken: tokens.access_token });
+        setState({
+          status: 'authenticated',
+          user: tokens.user,
+          accessToken: tokens.access_token,
+        });
         scheduleRefresh(tokens.expires_in);
       })
       .catch(() => {
@@ -114,7 +133,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(
     async (email: string, password: string) => {
       const tokens = await apiLogin(email, password);
-      setState({ status: 'authenticated', user: tokens.user, accessToken: tokens.access_token });
+      setState({
+        status: 'authenticated',
+        user: tokens.user,
+        accessToken: tokens.access_token,
+      });
       scheduleRefresh(tokens.expires_in);
     },
     [scheduleRefresh],

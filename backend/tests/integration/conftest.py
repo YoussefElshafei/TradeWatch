@@ -26,6 +26,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import httpx2 as httpx
 import pytest
 import pytest_asyncio
 from alembic import command
@@ -33,11 +34,15 @@ from alembic.config import Config
 from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
+from tradewatch.api.app import create_app
+from tradewatch.api.dependencies import get_session
+from tradewatch.api.routes.health import clear_readiness_checks
 from tradewatch.application.auth import create_access_token
 from tradewatch.config.settings import Settings
 from tradewatch.domain.entities import NewBar, NewQuote, NewTrade
 from tradewatch.domain.enums import AssetClass, UserRole
 from tradewatch.domain.ids import new_id
+from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.infrastructure.database.models import Instrument, Portfolio, Strategy, User
 
 # Read before the root `clean_env` fixture strips every TW_ variable. Import time is the
@@ -270,7 +275,9 @@ async def strategy(session: AsyncSession, user: User) -> Strategy:
         user_id=user.id,
         name="Test Strategy",
         strategy_type="sma_crossover",
-        parameters={"fast": 10, "slow": 30},
+        # Field names match `application/strategy/types/sma_crossover.py`'s `SmaCrossoverParams`
+        # — the actual, tested schema this strategy type validates against (ADR-0006).
+        parameters={"fast_period": 10, "slow_period": 30},
         symbols=["TEST001"],
     )
     session.add(row)
@@ -358,3 +365,27 @@ class SessionBoundStore:
             return await writer(rows)
         except SQLAlchemyError as error:
             raise _translate(error, f"writing {len(rows)} {what}") from error
+
+
+@pytest_asyncio.fixture
+async def api(session: AsyncSession, settings: Settings) -> AsyncIterator[httpx.AsyncClient]:
+    """Same shape as `test_market_api.py`'s `api` fixture — see its docstring for why this is
+    an async ASGI client with `get_session` overridden rather than a `TestClient` pointed at
+    the real database, and why the cache is attached but left unconnected. Shared here because
+    the Phase 6 strategy and backtest routes need exactly the same thing.
+    """
+    clear_readiness_checks()
+    app = create_app(settings)
+
+    async def _session_override() -> AsyncSession:
+        return session
+
+    app.dependency_overrides[get_session] = _session_override
+    app.state.cache = RedisCache(settings.redis)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+
+    app.dependency_overrides.clear()
+    clear_readiness_checks()

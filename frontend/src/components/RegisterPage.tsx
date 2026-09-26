@@ -30,7 +30,9 @@ export function RegisterPage() {
       await navigate('/', { replace: true });
     } catch (cause) {
       setError(
-        cause instanceof ApiError ? cause.message : 'Something went wrong. Please try again.',
+        cause instanceof ApiError
+          ? cause.message
+          : 'Something went wrong. Please try again.',
       );
       setSubmitting(false);
     }

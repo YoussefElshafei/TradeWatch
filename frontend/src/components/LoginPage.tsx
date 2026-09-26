@@ -32,7 +32,9 @@ export function LoginPage() {
       await navigate(state?.from?.pathname ?? '/', { replace: true });
     } catch (cause) {
       setError(
-        cause instanceof ApiError ? cause.message : 'Something went wrong. Please try again.',
+        cause instanceof ApiError
+          ? cause.message
+          : 'Something went wrong. Please try again.',
       );
       setSubmitting(false);
     }

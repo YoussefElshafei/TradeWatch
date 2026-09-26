@@ -47,6 +47,8 @@ tradewatch-aggregator = "tradewatch.workers.bar_aggregator:main"
 # Phase 4: Kafka -> Redis Pub/Sub fan-out, so /ws/market has something to relay.
 tradewatch-broadcaster = "tradewatch.workers.broadcaster:main"
 tradewatch-backfill = "tradewatch.workers.backfill:main"
+# Phase 6: claims `backtest_runs` rows via FOR UPDATE SKIP LOCKED and runs them (ADR-0007).
+tradewatch-backtest-runner = "tradewatch.workers.backtest_runner:main"
 tradewatch-ingest = "tradewatch.workers.ingestion:main"
 # The Phase 1 single-process path, kept for development without a broker. No replay, no
 # restart safety, no independent failure domains — see docs/PIPELINE.md.
@@ -55,6 +57,9 @@ tradewatch-pipeline = "tradewatch.workers.pipeline:main"
 [dependency-groups]
 dev = [
     "httpx2>=2.13.0",
+    # Phase 6: property-based tests on position/cash arithmetic (DEVELOPMENT_PLAN.md's own
+    # exit criterion) — generated fill sequences find the edge case a hand-picked one misses.
+    "hypothesis>=6.130",
     "import-linter>=2.3",
     "mypy>=1.18",
     "pytest>=8.4",

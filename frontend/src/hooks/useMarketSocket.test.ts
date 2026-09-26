@@ -220,9 +220,12 @@ describe('useMarketSocket', () => {
   });
 
   it('resets trade history when the symbol changes', async () => {
-    const { result, rerender } = renderHook(({ symbol }) => useMarketSocket(symbol, TOKEN), {
-      initialProps: { symbol: 'AAPL' },
-    });
+    const { result, rerender } = renderHook(
+      ({ symbol }) => useMarketSocket(symbol, TOKEN),
+      {
+        initialProps: { symbol: 'AAPL' },
+      },
+    );
     act(() => {
       FakeWebSocket.latest().open();
     });

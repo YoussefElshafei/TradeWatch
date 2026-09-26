@@ -4,6 +4,10 @@ Nothing above this layer builds a query. That is what makes the ownership rule i
 :mod:`~.base` enforceable — a scope that can be bypassed is not a scope.
 """
 
+from tradewatch.infrastructure.repositories.backtesting import (
+    BacktestEquityPointRepository,
+    BacktestTradeRepository,
+)
 from tradewatch.infrastructure.repositories.base import OwnedRepository, Repository
 from tradewatch.infrastructure.repositories.identity import (
     AuditLogRepository,
@@ -27,7 +31,9 @@ from tradewatch.infrastructure.repositories.trading import (
 
 __all__ = [
     "AuditLogRepository",
+    "BacktestEquityPointRepository",
     "BacktestRunRepository",
+    "BacktestTradeRepository",
     "BarRepository",
     "DeploymentRepository",
     "InstrumentRepository",

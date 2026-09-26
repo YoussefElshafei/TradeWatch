@@ -6,6 +6,8 @@
  * being.
  */
 
+import { Link } from 'react-router-dom';
+
 import { MarketView } from './MarketView';
 import { config } from '../config';
 import { useAuth } from '../hooks/useAuth';
@@ -22,6 +24,7 @@ export function Dashboard() {
         </div>
         {user && (
           <div className="account">
+            <Link to="/strategies">Strategies</Link>
             <span>{user.email}</span>
             <button type="button" onClick={() => void logout()}>
               Sign out
