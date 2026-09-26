@@ -98,6 +98,14 @@ class _SymbolState:
     #: How far this symbol swings relative to the others, shared by the tape and the bars.
     volatility_scale: float
     rng: random.Random
+    #: Draws quote sizes only. Trades and quotes run as two independent, concurrently
+    #: scheduled asyncio tasks (workers/ingestion.py) reading the *same* `_SymbolState`.
+    #: If quote sizing drew from `rng` too, the interleaving of the two tasks — which
+    #: depends on real-time scheduling, not on the seed — would perturb what `rng.gauss()`
+    #: returns to the trade walk next, breaking the "same seed, same stream" guarantee
+    #: (ADR-0004) the moment both streams actually run together instead of in isolation,
+    #: as every existing test does.
+    quote_rng: random.Random
     sequence: int = 0
 
 
@@ -248,6 +256,7 @@ class SyntheticProvider:
             # Seeded per symbol, so adding a symbol does not change any other symbol's
             # series — otherwise every fixture changes when the watchlist does.
             rng = random.Random(f"{self._seed}:{symbol}")  # noqa: S311
+            quote_rng = random.Random(f"{self._seed}:{symbol}:quote")  # noqa: S311
             volatility_scale = rng.uniform(0.6, 1.5)
             # Anchor the tape to wherever the minute-bar series is right now. Trades and
             # bars are independent until the Phase 3 aggregator derives one from the other,
@@ -266,6 +275,7 @@ class SyntheticProvider:
                 volatility=self._volatility * volatility_scale,
                 volatility_scale=volatility_scale,
                 rng=rng,
+                quote_rng=quote_rng,
             )
 
     @staticmethod
@@ -390,9 +400,20 @@ class SyntheticProvider:
 
             symbol = wanted[emitted % len(wanted)]
             state = self._states[symbol]
-            state.sequence += 1
-            price = self._step(state, gap=emitted in scenario.gap_at)
-            size = Decimal(state.rng.randint(1, 500))
+            if kind == "trade":
+                state.sequence += 1
+                price = self._step(state, gap=emitted in scenario.gap_at)
+                size = Decimal(state.rng.randint(1, 500))
+            else:
+                # Quotes wrap a spread around the *current* price instead of advancing
+                # the walk themselves (see `_SymbolState.quote_rng`) — only a trade print
+                # moves "the" price. A quote stream and a trade stream run concurrently at
+                # independent, unthrottled rates; if both called `_step`, whichever one
+                # iterated faster would silently dominate the shared walk, and "last trade"
+                # and "latest quote" would end up sampled from wildly different points of
+                # an artificially high-frequency series instead of tracking one number.
+                price = state.price
+                size = Decimal(state.quote_rng.randint(1, 500))
             if emitted in scenario.volume_spike_at:
                 size *= scenario.volume_spike_factor
 

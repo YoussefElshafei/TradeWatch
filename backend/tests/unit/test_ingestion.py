@@ -231,6 +231,35 @@ class TestSyntheticProvider:
 
         assert await first_price(["AAPL"]) == await first_price(["AAPL", "MSFT", "NVDA"])
 
+    async def test_quotes_do_not_move_the_price_a_trade_will_print(self) -> None:
+        """Regression: the real ingestion worker runs `stream_trades` and `stream_quotes`
+        as two concurrent, independently paced asyncio tasks against the same provider
+        (`workers/ingestion.py`). `stream_quotes` used to call the same `_step()` that
+        `stream_trades` uses, so pulling a burst of quotes silently walked the price a
+        later trade would print — and because the quote stream runs far faster than the
+        trade stream in production, "last trade" and "latest bid/ask" ended up sampled
+        from wildly different points of an artificially high-frequency walk. A quote must
+        only wrap a spread around the current price, never advance it.
+        """
+
+        async def second_trade_price(*, drain_quotes: bool) -> Decimal:
+            provider = SyntheticProvider(["AAPL"], seed=11)
+            [_first] = [event async for event in _take(provider.stream_trades(["AAPL"]), 1)]
+            if drain_quotes:
+                # A burst of quotes on the same provider/symbol, far more than one
+                # trade's worth — what an unthrottled quote stream emits in production
+                # while a single trade is still in flight.
+                async for _ in _take(provider.stream_quotes(["AAPL"]), 500):
+                    pass
+            [second] = [event async for event in _take(provider.stream_trades(["AAPL"]), 1)]
+            return second.price
+
+        # The second trade must land on the same price whether or not 500 quotes were
+        # drained in between — quote activity must never perturb the trade walk.
+        assert await second_trade_price(drain_quotes=True) == await second_trade_price(
+            drain_quotes=False
+        )
+
     async def test_bars_are_coherent(self) -> None:
         provider = SyntheticProvider(["AAPL"], seed=3)
 
