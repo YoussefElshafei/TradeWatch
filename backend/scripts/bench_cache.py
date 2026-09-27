@@ -20,6 +20,7 @@ import asyncio
 import datetime as dt
 import statistics
 import time
+import uuid
 from decimal import Decimal
 
 from sqlalchemy import delete
@@ -27,7 +28,7 @@ from sqlalchemy import delete
 from tradewatch.api.schemas.market import BarPoint, BarSeriesResponse
 from tradewatch.config.env import load_env_file
 from tradewatch.config.settings import ConfigurationError, get_settings
-from tradewatch.domain.entities import Instrument, NewBar
+from tradewatch.domain.entities import NewBar
 from tradewatch.domain.enums import AssetClass, BarInterval
 from tradewatch.domain.ids import new_id
 from tradewatch.infrastructure.cache import RedisCache
@@ -41,7 +42,7 @@ BAR_COUNT = 500
 REPETITIONS = 200
 
 
-async def _seed(database: Database) -> tuple[object, dt.datetime, dt.datetime]:
+async def _seed(database: Database) -> tuple[InstrumentModel, dt.datetime, dt.datetime]:
     end = dt.datetime.now(dt.UTC).replace(second=0, microsecond=0)
     start = end - dt.timedelta(minutes=BAR_COUNT)
 
@@ -50,7 +51,7 @@ async def _seed(database: Database) -> tuple[object, dt.datetime, dt.datetime]:
         existing = await instruments.get_by_symbol(SYMBOL)
         if existing is None:
             existing = await instruments.upsert(
-                Instrument(
+                InstrumentModel(
                     id=new_id(),
                     symbol=SYMBOL,
                     asset_class=AssetClass.EQUITY,
@@ -82,7 +83,7 @@ async def _seed(database: Database) -> tuple[object, dt.datetime, dt.datetime]:
     return existing, start, end
 
 
-async def _cleanup(database: Database, instrument_id: object) -> None:
+async def _cleanup(database: Database, instrument_id: uuid.UUID) -> None:
     async with database.session() as session:
         await session.execute(delete(BarModel).where(BarModel.instrument_id == instrument_id))
         await session.execute(delete(InstrumentModel).where(InstrumentModel.id == instrument_id))

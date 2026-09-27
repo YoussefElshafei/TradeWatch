@@ -318,7 +318,7 @@ class TestConfiguration:
         captured: dict[str, int] = {}
 
         class _Recording(FakeConsumerClient):
-            async def getmany(self, *, timeout_ms: int, max_records: int):  # type: ignore[no-untyped-def]
+            async def getmany(self, *, timeout_ms: int, max_records: int):
                 captured["max_records"] = max_records
                 captured["timeout_ms"] = timeout_ms
                 return await super().getmany(timeout_ms=timeout_ms, max_records=max_records)

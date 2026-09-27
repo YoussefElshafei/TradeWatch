@@ -149,9 +149,13 @@ show_error_codes = true
 pretty = true
 
 [[tool.mypy.overrides]]
-# Tests are checked, but without requiring full annotations on every fixture.
+# Tests are checked, but without requiring full annotations on every fixture. `strict` turns
+# on both `disallow_untyped_defs` and `disallow_incomplete_defs`; a fixture with a `-> None`
+# return annotation but untyped parameters is "incomplete", not "untyped", so both must be
+# disabled here or that one case still errors despite this override's own stated intent.
 module = "tests.*"
 disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [[tool.mypy.overrides]]
 # aiokafka ships no `py.typed` marker, so mypy cannot see its annotations. This silences

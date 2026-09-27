@@ -877,6 +877,19 @@ can re-run from the documented command alone.
 Playwright E2E; a failure-injection harness; **a test for each of F1–F20**; a chaos runbook;
 a load test with the shedding order proven.
 
+**Known flaky test to close here** — `backend/tests/api/test_websocket_market.py::TestConnectAndDisconnect::test_a_connection_closes_itself_the_instant_its_token_expires`
+(ADR-0010's "closed continuously, not only at connect" behaviour). *Open. Found during Phase 6
+verification, 2026-09-26; deliberately not fixed there — it is pre-existing test code from
+Phase 5, unrelated to Phase 6's changes.* The test mints a token with ~1 second of validity
+left and asserts the close arrives inside `pytest.raises(WebSocketDisconnect)`, which wraps
+only `ws.receive_text()`. When that 1-second window elapses during the connect handshake
+itself instead of after — which happens under load, e.g. running alongside the full ~1,050-test
+suite rather than in isolation — the server closes during `client.websocket_connect(...)`'s own
+`__enter__`, before `pytest.raises` is active, and the `WebSocketDisconnect` escapes uncaught.
+Passes reliably standalone; intermittent in the full run. Fix is widening the connect/assert
+race margin (e.g. wrap the whole `with` block in `pytest.raises`, not just the receive call) or
+giving the token a few seconds of headroom instead of one.
+
 ### Phase 12 — AWS deployment
 
 D6/D7/D8/D9 closed with written cost comparisons; infrastructure as code; managed PostgreSQL
