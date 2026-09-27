@@ -179,7 +179,7 @@ async def resume_deployment(
     if deployment.status is not DeploymentStatus.PAUSED:
         raise _conflict(deployment, "resume", required=DeploymentStatus.PAUSED.value)
     # `started_at` is untouched on purpose: it anchors the live driver's state-warm-up replay
-    # window (application/trading/live_service.py), which must not shrink just because the
+    # window (workers/paper_trading.py), which must not shrink just because the
     # deployment was paused and resumed.
     deployment.status = DeploymentStatus.RUNNING
     await session.commit()

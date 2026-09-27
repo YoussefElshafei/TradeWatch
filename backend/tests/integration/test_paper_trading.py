@@ -20,7 +20,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tradewatch.application.trading.live_service import PaperTradingService
 from tradewatch.domain.enums import (
     BarInterval,
     DeploymentStatus,
@@ -38,6 +37,7 @@ from tradewatch.infrastructure.database.models import (
     StrategyDeployment,
     User,
 )
+from tradewatch.workers.paper_trading import PaperTradingService
 
 pytestmark = pytest.mark.integration
 
