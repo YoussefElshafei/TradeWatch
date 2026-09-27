@@ -57,7 +57,7 @@ sets. Then, in four terminals:
 cd backend  && uv run tradewatch-producer   # market data → Kafka (no credentials needed)
 cd backend  && uv run tradewatch-consumer   # Kafka → PostgreSQL
 cd backend  && uv run tradewatch-aggregator # Kafka → 1m bars → 5m/1h/1d rollups
-cd backend  && uv run tradewatch-api        # http://127.0.0.1:8000  (docs at /docs)
+cd backend  && uv run tradewatch-api        # http://127.0.0.1:8010  (docs at /docs)
 cd frontend && npm run dev                  # http://127.0.0.1:5173 — a chart with real data
 ```
 

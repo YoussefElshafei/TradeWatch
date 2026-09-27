@@ -21,7 +21,7 @@ describe('fetchHealth', () => {
     );
 
     await expect(fetchHealth()).rejects.toThrow(ApiError);
-    await expect(fetchHealth()).rejects.toThrow('http://localhost:8000/health');
+    await expect(fetchHealth()).rejects.toThrow('http://localhost:8010/health');
   });
 
   it('raises ApiError carrying the status on a non-2xx response', async () => {

@@ -509,7 +509,11 @@ class ApiSettings(_Group):
     """
 
     api_host: str = "127.0.0.1"
-    api_port: int = Field(default=8000, gt=0, lt=65536)
+    # 8010, not the conventional 8000: left at 8000 in earlier phases, a stale dev-server
+    # process from an earlier session was found permanently squatting on host port 8000 with
+    # no way to identify or kill it (see PROJECT_STATE.md's known issues). Moved off it
+    # rather than keep fighting a single machine's port history.
+    api_port: int = Field(default=8010, gt=0, lt=65536)
     api_page_size_default: int = Field(default=100, gt=0)
     api_page_size_max: int = Field(default=1000, gt=0)
     backtest_timeout_seconds: int = Field(default=300, gt=0)

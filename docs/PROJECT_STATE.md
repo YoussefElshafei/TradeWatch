@@ -507,9 +507,17 @@ cd backend && uv run alembic upgrade head
 ```bash
 cd backend  && uv run tradewatch-producer  # provider → Kafka
 cd backend  && uv run tradewatch-consumer  # Kafka → PostgreSQL
-cd backend  && uv run tradewatch-api       # http://127.0.0.1:8000  (docs at /docs)
+cd backend  && uv run tradewatch-api       # http://127.0.0.1:8010  (docs at /docs)
 cd frontend && npm run dev                 # http://127.0.0.1:5173
 ```
+
+The API's default port is **8010**, not the conventional 8000 — changed 2026-09-27 after a
+stale dev-server process from an earlier session was found permanently squatting on host port
+8000 on one development machine, answering requests with a months-old route set, with no
+Windows tool (`netstat`, `Get-Process`, `Get-CimInstance`, `Stop-Process`) able to identify or
+kill the process actually holding it — a suspected Docker Desktop/WSL2 networking artifact.
+Set via `TW_API_PORT` / `VITE_API_BASE_URL` (`.env.example`); change both together if you pick
+a different port for your own machine.
 
 ### Entry points
 

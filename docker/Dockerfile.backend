@@ -50,7 +50,7 @@ COPY --from=builder --chown=tradewatch:tradewatch /app/src ./src
 
 USER tradewatch
 
-EXPOSE 8000
+EXPOSE 8010
 
 # The host and port come from configuration; the image does not hard-code where it listens.
 CMD ["tradewatch-api"]

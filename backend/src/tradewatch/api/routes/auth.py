@@ -84,7 +84,7 @@ def _set_refresh_cookie(response: Response, settings: Settings, tokens: IssuedTo
         # all — the browser silently drops it — so this only turns on in prod, where the
         # deployment is https by construction (`ARCHITECTURE.md` §13).
         secure=settings.app.env is Environment.PROD,
-        # `localhost:5173` and `localhost:8000` are different *origins* but the same *site*
+        # `localhost:5173` and `localhost:8010` are different *origins* but the same *site*
         # (SameSite is defined by registrable domain, not port), so `Lax` already covers
         # local dev. A production split across real domains would need `SameSite=None` plus
         # `Secure` — revisit this the moment the frontend and API stop sharing a domain
