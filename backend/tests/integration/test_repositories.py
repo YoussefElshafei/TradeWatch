@@ -825,9 +825,11 @@ class TestPositionRepository:
         rebuilt = await repository.rebuild_from_fills(portfolio.id)
         stored = await repository.get_position(portfolio.id, instrument.id)
 
-        assert rebuilt[instrument.id] == Decimal("120")
+        assert rebuilt[instrument.id].quantity == Decimal("120")
+        assert rebuilt[instrument.id].avg_entry_price == Decimal("10")
+        assert rebuilt[instrument.id].realized_pnl == Decimal("0")
         assert stored is not None
-        assert stored.quantity == rebuilt[instrument.id]
+        assert stored.quantity == rebuilt[instrument.id].quantity
 
 
 class TestOrderRepository:

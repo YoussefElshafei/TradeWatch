@@ -23,9 +23,11 @@ from tradewatch.infrastructure.repositories.market import (
 from tradewatch.infrastructure.repositories.trading import (
     BacktestRunRepository,
     DeploymentRepository,
+    EquityPointRepository,
     OrderRepository,
     PortfolioRepository,
     PositionRepository,
+    RebuiltPosition,
     StrategyRepository,
 )
 
@@ -36,12 +38,14 @@ __all__ = [
     "BacktestTradeRepository",
     "BarRepository",
     "DeploymentRepository",
+    "EquityPointRepository",
     "InstrumentRepository",
     "OrderRepository",
     "OwnedRepository",
     "PortfolioRepository",
     "PositionRepository",
     "QuoteRepository",
+    "RebuiltPosition",
     "RefreshTokenRepository",
     "Repository",
     "StrategyRepository",

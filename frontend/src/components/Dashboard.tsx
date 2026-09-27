@@ -25,6 +25,7 @@ export function Dashboard() {
         {user && (
           <div className="account">
             <Link to="/strategies">Strategies</Link>
+            <Link to="/portfolios">Portfolios</Link>
             <span>{user.email}</span>
             <button type="button" onClick={() => void logout()}>
               Sign out

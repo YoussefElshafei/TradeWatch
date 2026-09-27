@@ -17,7 +17,16 @@ from fastapi.responses import JSONResponse
 
 from tradewatch import __version__
 from tradewatch.api.errors import error_response, install_exception_handlers
-from tradewatch.api.routes import auth, backtests, health, market, strategies, websocket
+from tradewatch.api.routes import (
+    auth,
+    backtests,
+    deployments,
+    health,
+    market,
+    portfolios,
+    strategies,
+    websocket,
+)
 from tradewatch.api.routes.health import clear_readiness_checks, register_readiness_check
 from tradewatch.api.routes.websocket import ConnectionManager
 from tradewatch.config.env import load_env_file
@@ -171,6 +180,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(market.router)
     app.include_router(strategies.router)
     app.include_router(backtests.router)
+    app.include_router(portfolios.router)
+    app.include_router(deployments.router)
     app.include_router(websocket.router)
     return app
 
