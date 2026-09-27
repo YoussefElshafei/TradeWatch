@@ -21,7 +21,7 @@ function readString(value: string | undefined, fallback: string): string {
 }
 
 export const config: AppConfig = {
-  apiBaseUrl: readString(import.meta.env.VITE_API_BASE_URL, 'http://localhost:8000'),
+  apiBaseUrl: readString(import.meta.env.VITE_API_BASE_URL, 'http://localhost:8010'),
   environment: readString(import.meta.env.VITE_ENV, 'local'),
 };
 

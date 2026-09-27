@@ -120,19 +120,20 @@ services:
       TW_ENV: local
       TW_LOG_FORMAT: json
       TW_API_HOST: 0.0.0.0
+      TW_API_PORT: 8010
       TW_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-tradewatch}:${POSTGRES_PASSWORD:-tradewatch}@postgres:5432/${POSTGRES_DB:-tradewatch}
       TW_REDIS_URL: redis://redis:6379/0
       TW_KAFKA_BOOTSTRAP: kafka:19092
       TW_JWT_SECRET: ${TW_JWT_SECRET:-container-local-development-secret}
     ports:
-      - '127.0.0.1:8000:8000'
+      - '127.0.0.1:8010:8010'
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8010/health')"]
       interval: 10s
       timeout: 5s
       retries: 5

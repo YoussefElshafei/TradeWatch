@@ -168,7 +168,7 @@ jobs:
           uv run tradewatch-api &
           API_PID=$!
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:8000/health; then
+            if curl --fail --silent http://127.0.0.1:8010/health; then
               echo "API answered on attempt $attempt"
               kill $API_PID
               exit 0

@@ -31,7 +31,7 @@ cat <<'NEXT'
 Setup complete. Next:
 
   docker compose -f docker/docker-compose.yml up -d   # PostgreSQL + Redis + Kafka
-  cd backend  && uv run tradewatch-api                # API on http://127.0.0.1:8000
+  cd backend  && uv run tradewatch-api                # API on http://127.0.0.1:8010
   cd frontend && npm run dev                          # UI  on http://127.0.0.1:5173
 
 Run every check with ./scripts/check.sh

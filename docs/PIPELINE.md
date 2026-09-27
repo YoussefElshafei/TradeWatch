@@ -87,7 +87,7 @@ cd backend && uv run tradewatch-consumer      # → PostgreSQL
 cd backend && uv run tradewatch-aggregator    # → 1m bars, then 5m/1h/1d rollups
 
 # 5. The API and the UI
-cd backend  && uv run tradewatch-api      # http://127.0.0.1:8000/docs
+cd backend  && uv run tradewatch-api      # http://127.0.0.1:8010/docs
 cd frontend && npm run dev                # http://127.0.0.1:5173
 ```
 
