@@ -580,6 +580,36 @@ class TestBarAggregation:
 
         assert written == 1
 
+    async def test_a_start_that_falls_mid_bucket_still_aggregates_the_whole_bucket(
+        self, session: AsyncSession, instrument: Instrument
+    ) -> None:
+        """A sliding rollup window's `start` almost never lands on a bucket boundary.
+
+        `date_bin` buckets are anchored at the epoch, independent of `start` — so a naive
+        `bar_start >= start` filter would see only part of the bucket `start` falls inside,
+        and `roll_up` upserts that partial result unconditionally (rolled-up bars all carry
+        revision 0), permanently corrupting an already-complete bucket. `start` must be
+        floored to the bucket boundary before filtering.
+        """
+        repository = BarRepository(session)
+        await repository.upsert_many(
+            [make_bar(instrument.id, minute=minute) for minute in range(5)]
+        )
+
+        rolled = await repository.aggregate(
+            instrument.id,
+            BarInterval.ONE_MINUTE,
+            BarInterval.FIVE_MINUTES,
+            NOW + dt.timedelta(minutes=3),  # mid-bucket, not the bucket's own start
+            NOW + dt.timedelta(hours=1),
+        )
+
+        assert len(rolled) == 1
+        bar = rolled[0]
+        assert bar.bar_start == NOW
+        assert bar.volume == Decimal("5000"), "all five minutes, not just the two after start"
+        assert bar.trade_count == 50
+
 
 class TestOwnership:
     """The IDOR defence. Every owner-scoped method, with a second user."""

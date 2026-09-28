@@ -84,6 +84,20 @@ def step(
             ledger = outcome.ledger
 
     new_state, signals = compiled.evaluate(runtime.strategy_state, bar)
+    if len(signals) > 1:
+        # Silently unsafe otherwise: NEXT_BAR_OPEN would keep only the last signal as
+        # `pending` (dropping the others without ever applying them), and an immediate fill
+        # model would apply every signal to `ledger` but return only the last `outcome` —
+        # `PaperTradingService` persists exactly one order/fill per call, so earlier fills
+        # would change cash/position in memory yet never reach the `orders`/`fills` tables,
+        # breaking "the position-rebuild job reproduces the live-tracked position state
+        # exactly from fills alone." No registered strategy type does this today (`evaluate`
+        # is contractually `list[Signal]` for future strategies, but every current one
+        # returns at most one) — this is a deliberate fail-fast, not a supported case.
+        raise NotImplementedError(
+            f"strategy produced {len(signals)} signals for one bar; step() only supports "
+            "at most one signal per symbol per bar"
+        )
 
     new_pending: Signal | None = None
     for signal in signals:

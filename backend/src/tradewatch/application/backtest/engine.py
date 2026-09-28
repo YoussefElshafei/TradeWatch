@@ -189,6 +189,15 @@ def run_backtest(
             pending[symbol] = None
 
         states[symbol], signals = compiled.evaluate(states[symbol], bar)
+        if len(signals) > 1:
+            # See the matching guard in application/trading/driver.py's `step` — under
+            # NEXT_BAR_OPEN this loop would keep only the last signal as `pending`, silently
+            # dropping the others without ever applying them. No registered strategy type
+            # does this today; fail fast rather than silently lose a signal.
+            raise NotImplementedError(
+                f"strategy produced {len(signals)} signals for one bar; the backtest engine "
+                "only supports at most one signal per symbol per bar"
+            )
 
         for signal in signals:
             if execution_config.fill_model.value == "next_bar_open":

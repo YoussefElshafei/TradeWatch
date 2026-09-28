@@ -394,6 +394,19 @@ class BarRepository(Repository[Bar]):
             raise ValueError(f"cannot aggregate {source} up to {target}")
 
         seconds = int(target.duration.total_seconds())
+        # `date_bin` anchors buckets at the epoch regardless of `start`, so a `start` that
+        # falls inside a bucket (true on almost every periodic rollup pass, since `start`
+        # slides continuously while bucket boundaries don't) would otherwise make this query
+        # see only part of that bucket's source rows. `roll_up` upserts whatever this returns
+        # unconditionally (rolled-up bars all carry revision=0), so a partial result here
+        # permanently overwrites an already-complete bucket with a truncated one. Flooring
+        # `start` down to the bucket boundary it falls in ensures the earliest bucket touched
+        # always has every one of its source rows already stored.
+        epoch = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
+        aligned_start = epoch + dt.timedelta(
+            seconds=((start - epoch) // dt.timedelta(seconds=seconds)) * seconds
+        )
+        start = aligned_start
         bucket = func.date_bin(
             text(f"interval '{seconds} seconds'"),
             Bar.bar_start,
