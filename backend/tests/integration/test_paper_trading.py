@@ -15,11 +15,14 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from decimal import Decimal
+from typing import Any
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tradewatch.application.strategy import CompiledStrategy, Signal, StrategyParams, StrategySpec
+from tradewatch.domain.entities import Bar
 from tradewatch.domain.enums import (
     BarInterval,
     DeploymentStatus,
@@ -200,6 +203,87 @@ class TestGoldenFixtureLive:
 
         await session.refresh(portfolio)
         assert portfolio.cash_balance == Decimal(0)  # spent once, not twice
+
+
+def _raising_compiled(message: str) -> CompiledStrategy[Any, Any]:
+    """A `CompiledStrategy` that raises on every `evaluate` call — built directly rather than
+    through `compile_strategy`/the registry, since no registered strategy type is broken and
+    none should have to be for this test to exist.
+    """
+
+    def _initial_state(params: Any) -> Any:
+        return None  # never called: warm-up already built the real strategy's state.
+
+    def _evaluate(params: Any, state: Any, bar: Bar) -> tuple[Any, list[Signal]]:
+        raise RuntimeError(message)
+
+    spec = StrategySpec(
+        params_model=StrategyParams, initial_state=_initial_state, evaluate=_evaluate
+    )
+    return CompiledStrategy(strategy_type="raising-fake", params=StrategyParams(), spec=spec)
+
+
+class TestFailureIsolation:
+    async def test_a_deployment_that_raises_does_not_stop_a_sibling_deployment(
+        self, session: AsyncSession, user: User, other_user: User, instrument: Instrument
+    ) -> None:
+        """F14: `handle_bar`'s per-deployment try/except is the only thing standing between
+        one broken strategy and every other deployment on the same bar. Without it, this
+        test fails — confirmed by temporarily deleting the try/except in
+        `PaperTradingService.handle_bar` and re-running this file: the healthy deployment's
+        assertions below failed too, because the erroring deployment's exception aborted the
+        `for` loop before the healthy one was ever reached.
+
+        Two different users — not because ownership matters to `warm_up()` (`list_running()`
+        is explicitly not owner-scoped), but because `_make_deployment` gives every portfolio
+        the same name, and `UNIQUE (user_id, name)` would collide for two deployments under
+        one user.
+        """
+        erroring_deployment, _erroring_portfolio = await _make_deployment(
+            session, user=user, instrument=instrument
+        )
+        healthy_deployment, healthy_portfolio = await _make_deployment(
+            session, user=other_user, instrument=instrument
+        )
+
+        service = PaperTradingService(consumer=None, database=_FakeDatabase(session))  # type: ignore[arg-type]
+        await service.warm_up()
+
+        # Force the erroring deployment to be reached *before* the healthy one regardless of
+        # the database's row order — without this, a broken (no try/except) version of
+        # `handle_bar` could still pass by accident if the healthy deployment happened to be
+        # processed first.
+        service._contexts = {
+            erroring_deployment.id: service._contexts[erroring_deployment.id],
+            healthy_deployment.id: service._contexts[healthy_deployment.id],
+        }
+        failure_message = "deliberate strategy failure for the F14 isolation test"
+        service._contexts[erroring_deployment.id].compiled = _raising_compiled(failure_message)
+
+        # Warm up to just before the golden fixture's entry, then deliver the entry bar —
+        # the one bar that actually produces a signal for the healthy deployment to act on.
+        for day, close in enumerate(_CLOSES[:3]):
+            await service.handle_bar(_bar_event(symbol=instrument.symbol, day=day, close=close))
+        await service.handle_bar(_bar_event(symbol=instrument.symbol, day=3, close=_CLOSES[3]))
+
+        await session.refresh(erroring_deployment)
+        assert erroring_deployment.status is DeploymentStatus.ERRORED
+        assert erroring_deployment.error_message == failure_message
+
+        await session.refresh(healthy_deployment)
+        assert healthy_deployment.status is DeploymentStatus.RUNNING
+
+        orders = (
+            (
+                await session.execute(
+                    select(Order).where(Order.portfolio_id == healthy_portfolio.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(orders) == 1  # the healthy deployment's entry signal still fired
+        assert orders[0].status is OrderStatus.FILLED
 
 
 class TestOrderRateCeiling:
