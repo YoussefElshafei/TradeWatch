@@ -36,7 +36,14 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from tradewatch.domain.events import BarEvent, EventType, MarketEvent, QuoteEvent, TradeEvent
+from tradewatch.domain.events import (
+    AnomalyEvent,
+    BarEvent,
+    EventType,
+    MarketEvent,
+    QuoteEvent,
+    TradeEvent,
+)
 from tradewatch.observability.logging import get_logger
 
 __all__ = [
@@ -79,6 +86,7 @@ _MODELS: Final[dict[str, type[MarketEvent]]] = {
     EventType.QUOTE.value: QuoteEvent,
     EventType.BAR_CLOSED.value: BarEvent,
     EventType.BAR_CORRECTED.value: BarEvent,
+    EventType.ANOMALY_DETECTED.value: AnomalyEvent,
 }
 
 

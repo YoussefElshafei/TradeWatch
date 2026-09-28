@@ -31,8 +31,15 @@ from tradewatch.config.settings import (
     Settings,
     load_settings,
 )
-from tradewatch.domain.enums import BarInterval
-from tradewatch.domain.events import BarEvent, MarketEvent, QuoteEvent, TradeEvent
+from tradewatch.domain.enums import AlertSeverity, BarInterval
+from tradewatch.domain.events import (
+    AnomalyEvent,
+    BarEvent,
+    MarketEvent,
+    QuoteEvent,
+    TradeEvent,
+    deterministic_event_id,
+)
 from tradewatch.infrastructure.providers.normalization import EventFactory
 
 __all__ = [
@@ -40,6 +47,7 @@ __all__ = [
     "FakeConsumerClient",
     "FakeProducerClient",
     "FakeRecord",
+    "anomaly",
     "bar",
     "factory",
     "kafka_settings",
@@ -94,6 +102,45 @@ def bar(
         close=Decimal("10.5"),
         volume=Decimal("1000"),
         trade_count=5,
+    )
+
+
+def anomaly(
+    symbol: str = "AAPL",
+    *,
+    score: str = "4.2",
+    model_name: str = "baseline-zscore",
+    model_version: str = "1",
+) -> AnomalyEvent:
+    """Not built through `EventFactory`: that class normalizes a *provider's* raw data, and
+    an anomaly is derived inside this system, not received from one.
+    """
+    window_start = MOMENT - dt.timedelta(minutes=60)
+    window_end = MOMENT
+    return AnomalyEvent(
+        event_id=deterministic_event_id(
+            *AnomalyEvent.natural_key(
+                source="internal",
+                symbol=symbol,
+                model_name=model_name,
+                model_version=model_version,
+                window_start=window_start,
+                window_end=window_end,
+            )
+        ),
+        symbol=symbol,
+        occurred_at=window_end,
+        ingested_at=window_end,
+        source="internal",
+        producer="anomaly-detector@1.0",
+        correlation_id=deterministic_event_id(symbol, window_end.isoformat()),
+        window_start=window_start,
+        anomaly_score=Decimal(score),
+        threshold=Decimal("3.5"),
+        severity=AlertSeverity.WARNING,
+        model_name=model_name,
+        model_version=model_version,
+        features={"return": Decimal("0.08"), "volume_z": Decimal(score)},
     )
 
 

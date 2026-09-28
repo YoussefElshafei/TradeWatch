@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from tradewatch import __version__
 from tradewatch.api.errors import error_response, install_exception_handlers
 from tradewatch.api.routes import (
+    anomalies,
     auth,
     backtests,
     deployments,
@@ -182,6 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(backtests.router)
     app.include_router(portfolios.router)
     app.include_router(deployments.router)
+    app.include_router(anomalies.router)
     app.include_router(websocket.router)
     return app
 

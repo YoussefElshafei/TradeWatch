@@ -47,6 +47,7 @@ _EXPECTED_HTTP_PATHS = {
     "/api/v1/backtests",  # backtests.router
     "/api/v1/portfolios",  # portfolios.router
     "/api/v1/deployments",  # deployments.router
+    "/api/v1/anomalies",  # anomalies.router
 }
 
 

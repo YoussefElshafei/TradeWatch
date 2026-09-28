@@ -45,6 +45,7 @@ RETENTION: Final[dict[str, str]] = {
     "market.trades": _ms(days=7),
     "market.quotes": _ms(hours=24),
     "market.bars": _ms(days=30),
+    "anomalies": _ms(days=30),
     "dlq": _ms(days=30),
 }
 

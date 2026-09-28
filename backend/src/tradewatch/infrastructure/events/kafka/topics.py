@@ -6,10 +6,12 @@
 keyspace; everything after it is a contract and is not configurable, because a topic whose
 name depends on a setting is a topic no other team can find.
 
-**Four topics exist, and this phase uses all four.** §7.2 also lists `tw.signals.v1`,
-`tw.orders.v1`, `tw.fills.v1`, `tw.anomalies.v1` and `tw.alerts.v1`. None of them is created
-here. There is no strategy engine, no paper trading engine and no detector yet, so those
-topics would be empty names in a broker — the decoration this codebase keeps refusing.
+**As built through Phase 8:** the four market/DLQ topics from Phase 2, plus `tw.anomalies.v1`
+(Phase 8's Anomaly Detection Service is its producer). §7.2 also lists `tw.signals.v1`,
+`tw.orders.v1` and `tw.fills.v1`, and `tw.alerts.v1` — none of them is created here. Phases 6
+and 7 persist signals, orders, and fills straight to PostgreSQL rather than publishing them,
+and Phase 9's Alert Dispatcher does not exist yet, so those topics would still be empty names
+in a broker — the decoration this codebase keeps refusing.
 
 **Bars: 1-minute only, for now.** §7.2 specifies `tw.market.bars.1m.v1`, one topic per
 interval. Only 1-minute bars travel over Kafka in Phase 2, because that is the only interval
@@ -25,7 +27,14 @@ from dataclasses import dataclass
 from typing import Final
 
 from tradewatch.domain.enums import BarInterval
-from tradewatch.domain.events import BarEvent, EventType, MarketEvent, QuoteEvent, TradeEvent
+from tradewatch.domain.events import (
+    AnomalyEvent,
+    BarEvent,
+    EventType,
+    MarketEvent,
+    QuoteEvent,
+    TradeEvent,
+)
 
 __all__ = ["SCHEMA_MAJOR", "Topics", "UnroutableEventError"]
 
@@ -66,6 +75,11 @@ class Topics:
         return f"{self.prefix}.market.bars.{_PUBLISHED_BAR_INTERVAL.value}.v{SCHEMA_MAJOR}"
 
     @property
+    def anomalies(self) -> str:
+        """Phase 8: the Anomaly Detection Service's output (ADR-0008)."""
+        return f"{self.prefix}.anomalies.v{SCHEMA_MAJOR}"
+
+    @property
     def dead_letter(self) -> str:
         """One DLQ for every consumer (§7.2), not one per topic.
 
@@ -82,8 +96,8 @@ class Topics:
 
     @property
     def all(self) -> tuple[str, ...]:
-        """Every topic this phase creates."""
-        return (*self.market, self.dead_letter)
+        """Every topic every phase built so far creates."""
+        return (*self.market, self.anomalies, self.dead_letter)
 
     def for_event(self, event: MarketEvent) -> str:
         """The topic an event belongs on.
@@ -96,6 +110,8 @@ class Topics:
                 return self.trades
             case QuoteEvent():
                 return self.quotes
+            case AnomalyEvent():
+                return self.anomalies
             case BarEvent() if event.interval is _PUBLISHED_BAR_INTERVAL:
                 return self.bars_1m
             case BarEvent():

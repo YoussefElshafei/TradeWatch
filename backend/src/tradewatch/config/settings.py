@@ -315,6 +315,11 @@ class KafkaSettings(_Group):
     #: `tw.market.bars.1m.v1`, again for its own offsets — a paper-trading restart or lag
     #: must not affect persistence, aggregation, or broadcasting, and vice versa.
     kafka_paper_trading_group: str = "paper-trading"
+    #: The Anomaly Detection Service's group (Phase 8, `ARCHITECTURE.md` §7.4's
+    #: `anomaly-detector`). A fifth independent reader of `tw.market.bars.1m.v1` — its own
+    #: offsets mean a detector restart, a model reload, or a slow scoring pass never affects
+    #: any other consumer of the same topic, and vice versa.
+    kafka_anomaly_detector_group: str = "anomaly-detector"
     #: Where a brand-new group starts. "earliest", so a consumer added to an existing topic
     #: processes the history instead of silently skipping it.
     kafka_auto_offset_reset: str = "earliest"
