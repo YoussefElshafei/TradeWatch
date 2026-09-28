@@ -80,16 +80,17 @@ class TestCreation:
             "tw.market.trades.v1",
             "tw.market.quotes.v1",
             "tw.market.bars.1m.v1",
+            "tw.anomalies.v1",
             "tw.dlq.v1",
         }
 
     async def test_nothing_beyond_this_phase_is_created(self) -> None:
-        """No signals, orders, fills, anomalies or alerts topics. Nothing produces them."""
+        """No signals, orders, fills, or alerts topics. Nothing produces them yet."""
         admin = FakeAdmin()
 
         await ensure_topics(kafka_settings(), admin=admin)
 
-        assert len(admin.created_names()) == 4
+        assert len(admin.created_names()) == 5
 
     async def test_existing_topics_are_left_alone(self) -> None:
         """Idempotent, so every worker can call it at startup."""
@@ -105,7 +106,7 @@ class TestCreation:
 
         created = await ensure_topics(kafka_settings(), admin=admin)
 
-        assert set(created) == {"tw.market.quotes.v1", "tw.market.bars.1m.v1"}
+        assert set(created) == {"tw.market.quotes.v1", "tw.market.bars.1m.v1", "tw.anomalies.v1"}
 
     async def test_a_concurrent_creator_is_not_an_error(self) -> None:
         """Two workers racing to create a topic: one loses, and losing is success."""

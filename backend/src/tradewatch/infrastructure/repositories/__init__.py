@@ -9,6 +9,10 @@ from tradewatch.infrastructure.repositories.backtesting import (
     BacktestTradeRepository,
 )
 from tradewatch.infrastructure.repositories.base import OwnedRepository, Repository
+from tradewatch.infrastructure.repositories.detection import (
+    AnomalyDetectionRepository,
+    ModelVersionRepository,
+)
 from tradewatch.infrastructure.repositories.identity import (
     AuditLogRepository,
     RefreshTokenRepository,
@@ -32,6 +36,7 @@ from tradewatch.infrastructure.repositories.trading import (
 )
 
 __all__ = [
+    "AnomalyDetectionRepository",
     "AuditLogRepository",
     "BacktestEquityPointRepository",
     "BacktestRunRepository",
@@ -40,6 +45,7 @@ __all__ = [
     "DeploymentRepository",
     "EquityPointRepository",
     "InstrumentRepository",
+    "ModelVersionRepository",
     "OrderRepository",
     "OwnedRepository",
     "PortfolioRepository",

@@ -29,10 +29,11 @@ from typing import Any, Literal, Self
 from pydantic import Field, model_validator
 
 from tradewatch.domain.entities import DomainModel
-from tradewatch.domain.enums import BarInterval
+from tradewatch.domain.enums import AlertSeverity, BarInterval
 
 __all__ = [
     "TRADEWATCH_NAMESPACE",
+    "AnomalyEvent",
     "BarEvent",
     "EventType",
     "MarketEvent",
@@ -57,6 +58,7 @@ class EventType(StrEnum):
     QUOTE = "market.quote"
     BAR_CLOSED = "market.bar.closed"
     BAR_CORRECTED = "market.bar.corrected"
+    ANOMALY_DETECTED = "anomaly.detected"
 
 
 def deterministic_event_id(*parts: object) -> uuid.UUID:
@@ -263,6 +265,72 @@ class BarEvent(MarketEvent):
         return (source, "bar", symbol, interval.value, bar_start.isoformat(), revision)
 
 
+class AnomalyEvent(MarketEvent):
+    """A window of one symbol's activity scored as statistically unusual (ADR-0008).
+
+    **Not evidence of wrongdoing.** This event says a symbol's recent behaviour was unlike
+    its own recent history — earnings, index rebalances, news, halts, and thin opens all
+    produce exactly this signature. That is the only claim this event makes, everywhere it
+    appears — code, logs, UI copy, or documentation — and ADR-0008 names the handful of
+    stronger words it must never be described with instead.
+
+    ``occurred_at`` is ``window_end``, by the same convention as :class:`BarEvent`: that is
+    the moment the window closed and the score became a fact. ``features`` carries exactly
+    what produced ``anomaly_score`` — a detection that cannot be reconstructed from its own
+    event is not explainable, and ADR-0008 requires every detection to be.
+    """
+
+    event_type: Literal[EventType.ANOMALY_DETECTED] = EventType.ANOMALY_DETECTED
+    window_start: datetime
+    anomaly_score: Decimal
+    threshold: Decimal
+    severity: AlertSeverity
+    model_name: str = Field(min_length=1, max_length=50)
+    model_version: str = Field(min_length=1, max_length=32)
+    #: The feature values behind the score — e.g. ``{"return": ..., "volume_z": ...}``. The
+    #: same names :mod:`application.detection.features` produces, so a stored detection and
+    #: the code that scored it always agree on vocabulary.
+    features: dict[str, Decimal]
+
+    @model_validator(mode="after")
+    def _window_is_ordered(self) -> Self:
+        if self.occurred_at <= self.window_start:
+            raise ValueError(
+                f"window_end (occurred_at={self.occurred_at}) must be after "
+                f"window_start ({self.window_start})"
+            )
+        return self
+
+    @property
+    def window_end(self) -> datetime:
+        return self.occurred_at
+
+    @classmethod
+    def natural_key(
+        cls,
+        *,
+        source: str,
+        symbol: str,
+        model_name: str,
+        model_version: str,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> tuple[object, ...]:
+        """One detection per (symbol, model, window). A model retrained to a new version is
+        a different detector, so its score for a window already seen is a new detection, not
+        a duplicate of the old model's.
+        """
+        return (
+            source,
+            "anomaly",
+            symbol,
+            model_name,
+            model_version,
+            window_start.isoformat(),
+            window_end.isoformat(),
+        )
+
+
 def event_summary(event: MarketEvent) -> dict[str, Any]:
     """The fields worth putting in a log line.
 
@@ -282,4 +350,10 @@ def event_summary(event: MarketEvent) -> dict[str, Any]:
         summary |= {"bid": str(event.bid_price), "ask": str(event.ask_price)}
     elif isinstance(event, BarEvent):
         summary |= {"interval": event.interval.value, "close": str(event.close)}
+    elif isinstance(event, AnomalyEvent):
+        summary |= {
+            "anomaly_score": str(event.anomaly_score),
+            "severity": event.severity.value,
+            "model_name": event.model_name,
+        }
     return summary

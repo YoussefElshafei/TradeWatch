@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.kafka_support import bar, quote, trade
+from tests.kafka_support import anomaly, bar, quote, trade
 from tradewatch.domain.enums import BarInterval
 from tradewatch.infrastructure.events.kafka.topics import (
     SCHEMA_MAJOR,
@@ -28,6 +28,7 @@ class TestNaming:
         assert topics.trades == "tw.market.trades.v1"
         assert topics.quotes == "tw.market.quotes.v1"
         assert topics.bars_1m == "tw.market.bars.1m.v1"
+        assert topics.anomalies == "tw.anomalies.v1"
         assert topics.dead_letter == "tw.dlq.v1"
 
     def test_the_prefix_is_configurable_so_environments_can_share_a_broker(self) -> None:
@@ -40,13 +41,15 @@ class TestNaming:
         for name in Topics("tw").all:
             assert name.endswith(f".v{SCHEMA_MAJOR}")
 
-    def test_this_phase_creates_exactly_four_topics(self) -> None:
-        """The other five in §7.2 have no producer and no consumer yet."""
-        assert len(Topics().all) == 4
+    def test_the_topics_built_so_far_are_exactly_these_five(self) -> None:
+        """The other four in §7.2 (`signals`, `orders`, `fills`, `alerts`) have no producer
+        and no consumer yet."""
+        assert len(Topics().all) == 5
         assert set(Topics().all) == {
             "tw.market.trades.v1",
             "tw.market.quotes.v1",
             "tw.market.bars.1m.v1",
+            "tw.anomalies.v1",
             "tw.dlq.v1",
         }
 
@@ -67,6 +70,9 @@ class TestRouting:
 
     def test_a_one_minute_bar_goes_to_the_bars_topic(self) -> None:
         assert Topics().for_event(bar()) == "tw.market.bars.1m.v1"
+
+    def test_an_anomaly_goes_to_the_anomalies_topic(self) -> None:
+        assert Topics().for_event(anomaly()) == "tw.anomalies.v1"
 
     def test_another_interval_is_refused_rather_than_invented(self) -> None:
         """No aggregator exists yet, so nothing produces these. Guessing a topic name

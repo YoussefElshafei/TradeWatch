@@ -19,6 +19,14 @@ dependencies = [
     "asyncpg>=0.30",
     "fastapi>=0.118",
     "httpx2>=2.13",
+    # Phase 8 (ADR-0008): serializing the trained IsolationForest artifact. Preferred over
+    # raw pickle for numpy-array-heavy objects — same underlying format, faster and smaller
+    # for this shape of data, and it is scikit-learn's own documented recommendation.
+    "joblib>=1.4",
+    # Phase 8 (ADR-0008): feature arrays for the baseline (median/MAD) and the model
+    # (IsolationForest) — both need vectorized numeric work that pure Python's `statistics`
+    # module does not offer efficiently at this data volume.
+    "numpy>=2.1",
     # Phase 5 (ADR-0010): JWT access tokens. The most-used pure-Python JWT library, HS256
     # support built in, no extra crypto backend needed for the symmetric algorithm this
     # phase uses.
@@ -30,6 +38,10 @@ dependencies = [
     # Phase 4 (ADR-0003): cache + WebSocket fan-out via Pub/Sub. redis-py ships its own
     # asyncio client (`redis.asyncio`) since 4.2, so no separate aioredis package is needed.
     "redis>=6.0",
+    # Phase 8 (ADR-0008): the model tier. Unsupervised, well-understood, and ships with the
+    # `IsolationForest` estimator ADR-0008 names — no heavier ML framework justified for one
+    # estimator trained offline on tabular features.
+    "scikit-learn>=1.7",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=25.4",
     "tzdata>=2026.4",
@@ -52,6 +64,9 @@ tradewatch-backtest-runner = "tradewatch.workers.backtest_runner:main"
 # Phase 7: the fourth independent reader of tw.market.bars.1m.v1 (ADR-0001), running
 # deployed strategies through the same Execution Simulator the backtest runner uses.
 tradewatch-paper-trading = "tradewatch.workers.paper_trading:main"
+# Phase 8: the fifth independent reader of tw.market.bars.1m.v1 (ADR-0001), scoring each
+# closed bar for statistically unusual activity and publishing tw.anomalies.v1.
+tradewatch-anomaly-detector = "tradewatch.workers.anomaly_detector:main"
 tradewatch-ingest = "tradewatch.workers.ingestion:main"
 # The Phase 1 single-process path, kept for development without a broker. No replay, no
 # restart safety, no independent failure domains — see docs/PIPELINE.md.
@@ -168,6 +183,13 @@ disallow_incomplete_defs = false
 # instead of leaking `Any` into the codebase — which is also what makes those clients
 # substitutable in tests.
 module = ["aiokafka.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Neither scikit-learn nor joblib ships a `py.typed` marker. Same treatment as aiokafka
+# above: `application.detection.model` is the only module that touches either, and its own
+# public functions are fully annotated, so the untyped surface stops there.
+module = ["joblib.*", "sklearn.*"]
 ignore_missing_imports = true
 
 

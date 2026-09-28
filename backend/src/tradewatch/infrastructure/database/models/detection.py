@@ -1,10 +1,9 @@
 """Anomaly detection results, model versions, and alerting.
 
-**On naming.** Every column, constraint, and index here says *anomaly* and never
-*manipulation*, *fraud*, or *surveillance*. That is ADR-0008, and it is a hard requirement
-rather than a stylistic preference: this schema stores a score saying market activity was
-statistically unlike a symbol's own recent behaviour, and nothing in it has ever been
-validated against a confirmed case of anything illegal.
+**On naming.** Every column, constraint, and index here says *anomaly*, and that is the only
+claim this schema makes: a score saying market activity was statistically unlike a symbol's
+own recent behaviour. ADR-0008 is a hard requirement here, not a stylistic preference, and
+names the handful of words this schema (and everything built on it) never uses instead.
 
 **Detections are explainable by construction.** Every row carries the `features` that
 produced the score, the `threshold` it crossed, and the `model_name` / `model_version` that
@@ -108,6 +107,11 @@ class AnomalyDetection(UUIDPrimaryKey, Base):
 
     __tablename__ = "anomaly_detections"
 
+    # ADR-0012: a deterministic UUIDv5 over (symbol, model_name, model_version, window),
+    # so a Kafka redelivery of `anomaly.detected` upserts onto the same row instead of
+    # duplicating a detection (`UNIQUE (event_id)`, added after the initial schema — see
+    # migration 89b564a365bd for why this table needed one and the others already had it).
+    event_id: Mapped[uuid.UUID] = mapped_column(nullable=False, unique=True)
     instrument_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("instruments.id", ondelete="RESTRICT"), nullable=False
     )

@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from tests.kafka_support import MOMENT, bar, factory, quote, trade
+from tests.kafka_support import MOMENT, anomaly, bar, factory, quote, trade
 from tradewatch.domain.enums import BarInterval
-from tradewatch.domain.events import BarEvent, EventType, QuoteEvent, TradeEvent
+from tradewatch.domain.events import AnomalyEvent, BarEvent, EventType, QuoteEvent, TradeEvent
 from tradewatch.infrastructure.events.envelope import (
     SUPPORTED_SCHEMA_VERSIONS,
     EventDecodeError,
@@ -177,6 +177,20 @@ class TestRoundTrip:
         assert isinstance(restored, BarEvent)
         assert restored.event_type is EventType.BAR_CORRECTED
         assert restored.revision == 2
+
+    def test_an_anomaly_survives_intact_including_its_explanation(self) -> None:
+        """ADR-0008: a detection must be explainable from its own event, so `features` and
+        `threshold` — not just `anomaly_score` — have to make the round trip too."""
+        original = anomaly()
+
+        restored = decode(encode(original))
+
+        assert isinstance(restored, AnomalyEvent)
+        assert restored == original
+        assert restored.features == original.features
+        assert restored.threshold == original.threshold
+        assert restored.model_name == original.model_name
+        assert restored.model_version == original.model_version
 
     def test_timestamps_stay_utc_and_exact(self) -> None:
         restored = decode(encode(trade()))

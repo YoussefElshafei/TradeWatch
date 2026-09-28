@@ -1086,6 +1086,7 @@ class TestDetection:
         """ADR-0008: a detection nobody can explain is a detection nobody should act on."""
         detection = AnomalyDetection(
             id=new_id(),
+            event_id=new_id(),
             instrument_id=instrument.id,
             detected_at=NOW,
             window_start=NOW - dt.timedelta(hours=1),
@@ -1114,6 +1115,7 @@ class TestDetection:
             "ck_anomaly_detections_window_ordered",
             AnomalyDetection(
                 id=new_id(),
+                event_id=new_id(),
                 instrument_id=instrument.id,
                 detected_at=NOW,
                 window_start=NOW,
@@ -1121,6 +1123,46 @@ class TestDetection:
                 anomaly_score=Decimal("4.2"),
                 threshold=Decimal("3.5"),
                 severity=AlertSeverity.WARNING,
+                model_name="baseline_zscore",
+                model_version="1",
+            ),
+        )
+
+    async def test_event_id_must_be_unique(
+        self, session: AsyncSession, instrument: Instrument
+    ) -> None:
+        """ADR-0012: a redelivered `anomaly.detected` must not duplicate a detection."""
+        shared_event_id = new_id()
+        session.add(
+            AnomalyDetection(
+                id=new_id(),
+                event_id=shared_event_id,
+                instrument_id=instrument.id,
+                detected_at=NOW,
+                window_start=NOW - dt.timedelta(hours=1),
+                window_end=NOW,
+                anomaly_score=Decimal("4.2"),
+                threshold=Decimal("3.5"),
+                severity=AlertSeverity.WARNING,
+                model_name="baseline_zscore",
+                model_version="1",
+            )
+        )
+        await session.flush()
+
+        await expect_violation(
+            session,
+            "uq_anomaly_detections_event_id",
+            AnomalyDetection(
+                id=new_id(),
+                event_id=shared_event_id,
+                instrument_id=instrument.id,
+                detected_at=NOW,
+                window_start=NOW - dt.timedelta(hours=1),
+                window_end=NOW,
+                anomaly_score=Decimal("9.9"),
+                threshold=Decimal("3.5"),
+                severity=AlertSeverity.CRITICAL,
                 model_name="baseline_zscore",
                 model_version="1",
             ),
