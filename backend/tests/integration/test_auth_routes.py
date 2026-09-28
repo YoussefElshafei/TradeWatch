@@ -296,3 +296,41 @@ class TestRateLimiting:
             await cache.disconnect()
             app.dependency_overrides.clear()
             clear_readiness_checks()
+
+    async def test_refresh_is_also_per_ip_rate_limited(
+        self, session: AsyncSession, settings: Settings
+    ) -> None:
+        """`/refresh` writes to the database (rotates a token, writes an audit row) on every
+        call and, unlike `/login`, cannot be limited per-user (there is no access token yet)
+        — so it needs the same per-IP cap as the other unauthenticated auth routes.
+        """
+        tight = settings.model_copy(
+            update={"security": settings.security.model_copy(update={"rate_limit_anon_per_min": 2})}
+        )
+        clear_readiness_checks()
+        app = create_app(tight)
+
+        async def _session_override() -> AsyncSession:
+            return session
+
+        app.dependency_overrides[get_session] = _session_override
+        cache = RedisCache(tight.redis)
+        await cache.connect()
+        await _sweep(cache)
+        app.state.cache = cache
+
+        transport = httpx.ASGITransport(app=app)
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as api:
+                for _ in range(2):
+                    response = await api.post("/api/v1/auth/refresh")
+                    assert response.status_code == 401
+
+                limited = await api.post("/api/v1/auth/refresh")
+                assert limited.status_code == 429
+                assert "Retry-After" in limited.headers
+        finally:
+            await _sweep(cache)
+            await cache.disconnect()
+            app.dependency_overrides.clear()
+            clear_readiness_checks()

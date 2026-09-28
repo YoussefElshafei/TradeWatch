@@ -45,6 +45,8 @@ _EXPECTED_HTTP_PATHS = {
     "/api/v1/market/{symbol}/bars",  # market.router
     "/api/v1/strategies",  # strategies.router
     "/api/v1/backtests",  # backtests.router
+    "/api/v1/portfolios",  # portfolios.router
+    "/api/v1/deployments",  # deployments.router
 }
 
 

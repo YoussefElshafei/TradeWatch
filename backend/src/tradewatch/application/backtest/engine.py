@@ -32,7 +32,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal
+from decimal import Decimal
 from typing import Any
 
 from tradewatch.application.backtest.metrics import (
@@ -44,7 +44,7 @@ from tradewatch.application.backtest.metrics import (
     volatility_pct,
     win_rate_pct,
 )
-from tradewatch.application.execution import ExecutionConfig, SymbolLedger, simulate_fill
+from tradewatch.application.execution import ExecutionConfig, SymbolLedger, apply_signal
 from tradewatch.application.strategy import Signal, compile_strategy
 from tradewatch.domain.entities import Bar
 from tradewatch.domain.enums import OrderSide, SignalDirection
@@ -56,11 +56,6 @@ __all__ = [
     "EquityPointResult",
     "run_backtest",
 ]
-
-#: Fractional shares are allowed (this is a simulator, not a broker with lot-size rules —
-#: `Instrument.lot_size` is a real-money concern for Phase 7, not this pure engine), but a
-#: sizing calculation still needs a stopping precision. Matches the database's money scale.
-_SIZE_PRECISION = Decimal("0.00000001")
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +189,15 @@ def run_backtest(
             pending[symbol] = None
 
         states[symbol], signals = compiled.evaluate(states[symbol], bar)
+        if len(signals) > 1:
+            # See the matching guard in application/trading/driver.py's `step` — under
+            # NEXT_BAR_OPEN this loop would keep only the last signal as `pending`, silently
+            # dropping the others without ever applying them. No registered strategy type
+            # does this today; fail fast rather than silently lose a signal.
+            raise NotImplementedError(
+                f"strategy produced {len(signals)} signals for one bar; the backtest engine "
+                "only supports at most one signal per symbol per bar"
+            )
 
         for signal in signals:
             if execution_config.fill_model.value == "next_bar_open":
@@ -264,21 +268,6 @@ def run_backtest(
     )
 
 
-def _size_long_entry(ledger: SymbolLedger, bar: Bar, config: ExecutionConfig) -> Decimal:
-    """How many shares the ledger's available cash buys, net of commission, at this fill.
-
-    A probe fill of quantity 1 reveals the exact per-share all-in cost — slippage is a fixed
-    fraction of the reference price, not a function of size in this model — so the real
-    quantity can be solved for directly rather than searched for.
-    """
-    probe = simulate_fill(OrderSide.BUY, Decimal(1), bar, config)
-    per_share_cost = probe.price * (1 + config.commission_pct) + config.commission_per_share
-    if per_share_cost <= 0:
-        return Decimal(0)
-    quantity = (ledger.cash / per_share_cost).quantize(_SIZE_PRECISION, rounding=ROUND_DOWN)
-    return max(quantity, Decimal(0))
-
-
 def _apply_signal(
     symbol: str,
     signal: Signal,
@@ -289,41 +278,48 @@ def _apply_signal(
 ) -> tuple[SymbolLedger, _OpenTrade | None, BacktestTradeResult | None]:
     """Turn one signal into (at most) one fill against `fill_bar`.
 
+    Delegates the actual sizing/fill/ledger mechanics to
+    `application.execution.apply_signal` — the same function the Paper Trading Engine calls
+    (`ARCHITECTURE.md`/ADR-0007) — spending the whole sub-ledger's cash as the budget, per
+    this module's own docstring on equal fixed sub-allocation. This function's only job is
+    translating that shared outcome into the backtest's own bookkeeping: the open-trade
+    tracker and a completed `BacktestTradeResult` when a position closed.
+
     Returns the possibly-updated ledger and open-trade tracker, and a completed
     `BacktestTradeResult` when this signal closed a position — `None` otherwise, including
     when the signal does not change the current position (already long, or already flat).
     """
-    if signal.direction is SignalDirection.LONG and open_trade is None:
-        quantity = _size_long_entry(ledger, fill_bar, config)
-        if quantity <= 0:
-            return ledger, open_trade, None
-        fill = simulate_fill(OrderSide.BUY, quantity, fill_bar, config)
-        new_ledger = ledger.buy(fill)
+    outcome = apply_signal(
+        signal.direction, cash_budget=ledger.cash, bar=fill_bar, config=config, ledger=ledger
+    )
+    if outcome.fill is None:
+        return ledger, open_trade, None
+
+    if signal.direction is SignalDirection.LONG:
         new_open_trade = _OpenTrade(
-            quantity=fill.quantity, entry_price=fill.price, entry_at=fill.filled_at
+            quantity=outcome.fill.quantity,
+            entry_price=outcome.fill.price,
+            entry_at=outcome.fill.filled_at,
         )
-        return new_ledger, new_open_trade, None
+        return outcome.ledger, new_open_trade, None
 
-    if signal.direction is SignalDirection.FLAT and open_trade is not None:
-        fill = simulate_fill(OrderSide.SELL, open_trade.quantity, fill_bar, config)
-        new_ledger = ledger.sell(fill)
-        pnl = new_ledger.realized_pnl - ledger.realized_pnl
-        entry_notional = open_trade.entry_price * open_trade.quantity
-        return_pct = (pnl / entry_notional * 100) if entry_notional > 0 else Decimal(0)
-        completed = BacktestTradeResult(
-            symbol=symbol,
-            side=OrderSide.BUY,
-            quantity=open_trade.quantity,
-            entry_price=open_trade.entry_price,
-            entry_at=open_trade.entry_at,
-            exit_price=fill.price,
-            exit_at=fill.filled_at,
-            pnl=pnl,
-            return_pct=return_pct,
-        )
-        return new_ledger, None, completed
-
-    return ledger, open_trade, None
+    # SignalDirection.FLAT: apply_signal only produced a fill because a position was open.
+    assert open_trade is not None
+    pnl = outcome.ledger.realized_pnl - ledger.realized_pnl
+    entry_notional = open_trade.entry_price * open_trade.quantity
+    return_pct = (pnl / entry_notional * 100) if entry_notional > 0 else Decimal(0)
+    completed = BacktestTradeResult(
+        symbol=symbol,
+        side=OrderSide.BUY,
+        quantity=open_trade.quantity,
+        entry_price=open_trade.entry_price,
+        entry_at=open_trade.entry_at,
+        exit_price=outcome.fill.price,
+        exit_at=outcome.fill.filled_at,
+        pnl=pnl,
+        return_pct=return_pct,
+    )
+    return outcome.ledger, None, completed
 
 
 def _build_equity_curve(equity_by_time: Mapping[dt.datetime, Decimal]) -> list[EquityPointResult]:

@@ -311,6 +311,10 @@ class KafkaSettings(_Group):
     #: topics, for the same reason the aggregator is a second one: its own offsets mean a
     #: broadcaster restart or lag never affects persistence or aggregation, and vice versa.
     kafka_broadcast_group: str = "broadcaster"
+    #: The Paper Trading Engine's group (Phase 7). A fourth independent reader of
+    #: `tw.market.bars.1m.v1`, again for its own offsets — a paper-trading restart or lag
+    #: must not affect persistence, aggregation, or broadcasting, and vice versa.
+    kafka_paper_trading_group: str = "paper-trading"
     #: Where a brand-new group starts. "earliest", so a consumer added to an existing topic
     #: processes the history instead of silently skipping it.
     kafka_auto_offset_reset: str = "earliest"

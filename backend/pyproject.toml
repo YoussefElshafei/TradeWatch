@@ -49,6 +49,9 @@ tradewatch-broadcaster = "tradewatch.workers.broadcaster:main"
 tradewatch-backfill = "tradewatch.workers.backfill:main"
 # Phase 6: claims `backtest_runs` rows via FOR UPDATE SKIP LOCKED and runs them (ADR-0007).
 tradewatch-backtest-runner = "tradewatch.workers.backtest_runner:main"
+# Phase 7: the fourth independent reader of tw.market.bars.1m.v1 (ADR-0001), running
+# deployed strategies through the same Execution Simulator the backtest runner uses.
+tradewatch-paper-trading = "tradewatch.workers.paper_trading:main"
 tradewatch-ingest = "tradewatch.workers.ingestion:main"
 # The Phase 1 single-process path, kept for development without a broker. No replay, no
 # restart safety, no independent failure domains — see docs/PIPELINE.md.

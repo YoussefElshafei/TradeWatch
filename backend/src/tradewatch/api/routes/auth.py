@@ -182,6 +182,7 @@ async def login(
     response_model=TokenResponse,
     summary="Rotate the refresh token and issue a new access token",
     responses={401: {"description": "Missing, invalid, expired, or reused refresh token"}},
+    dependencies=[Depends(rate_limit_by_ip("auth-refresh"))],
 )
 async def refresh(
     request: Request,

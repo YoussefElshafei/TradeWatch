@@ -11,6 +11,8 @@ import { BacktestForm } from './components/BacktestForm';
 import { BacktestResultsPage } from './components/BacktestResults';
 import { Dashboard } from './components/Dashboard';
 import { LoginPage } from './components/LoginPage';
+import { PortfolioDetailPage } from './components/PortfolioDetailPage';
+import { PortfoliosPage } from './components/PortfoliosPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { RegisterPage } from './components/RegisterPage';
 import { StrategiesPage } from './components/StrategiesPage';
@@ -28,6 +30,8 @@ export function App() {
         <Route path="/strategies/new" element={<StrategyEditor />} />
         <Route path="/backtests/new" element={<BacktestForm />} />
         <Route path="/backtests/:id" element={<BacktestResultsPage />} />
+        <Route path="/portfolios" element={<PortfoliosPage />} />
+        <Route path="/portfolios/:id" element={<PortfolioDetailPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
