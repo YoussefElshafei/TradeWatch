@@ -89,7 +89,7 @@ jobs:
           if-no-files-found: error
 
   backend-integration:
-    name: Backend — integration tests (real PostgreSQL)
+    name: Backend — integration tests (real PostgreSQL and Redis)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -107,6 +107,22 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U tradewatch -d tradewatch_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+      # test_auth_routes.py (ADR-0010) needs a *real* Redis, not the deliberately-unconnected
+      # one test_market_api.py uses: rate limiting and refresh-token denylisting are Redis
+      # state, and mocking either would let a broken implementation pass for the wrong
+      # reason. tests/conftest.py's `settings` fixture hardcodes redis://localhost:6379/1,
+      # which is why this is exposed on localhost:6379 exactly like postgres above, rather
+      # than addressed by service name.
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
@@ -259,7 +275,8 @@ jobs:
       - name: Compose file is valid
         run: docker compose -f docker/docker-compose.yml config --quiet
 
-  # Phase 2 adds Kafka and Redis services to backend-integration.
+  # Phase 2 adds a Kafka service to backend-integration; Redis landed with Phase 9's fix
+  # for test_auth_routes.py's real-Redis requirement.
   # Phase 5 adds: security (pip-audit, npm audit, secret scanning, Trivy).
   # Phase 11 adds: e2e (Playwright) and failure-recovery jobs.
   # Phase 10 adds: a nightly performance workflow, separate from this one.
