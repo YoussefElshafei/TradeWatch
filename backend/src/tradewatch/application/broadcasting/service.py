@@ -39,10 +39,11 @@ from tradewatch.application.ports.broadcaster import EventBroadcaster
 from tradewatch.application.ports.cache import Cache
 from tradewatch.application.ports.event_bus import EventBatchConsumer
 from tradewatch.domain.enums import BarInterval
-from tradewatch.domain.events import BarEvent, MarketEvent, QuoteEvent, TradeEvent
+from tradewatch.domain.events import AlertEvent, BarEvent, MarketEvent, QuoteEvent, TradeEvent
 from tradewatch.observability.logging import get_logger
 
 __all__ = [
+    "ALERT_BROADCAST_CHANNEL",
     "BROADCAST_CHANNEL",
     "BroadcastStats",
     "MarketBroadcastService",
@@ -59,6 +60,10 @@ log = get_logger(__name__)
 #: `api/routes/websocket.py` — rather than one Redis subscription per symbol, which would
 #: grow without bound as clients pick different watchlists.
 BROADCAST_CHANNEL: Final = "tw:ws:market"
+
+#: Phase 9's channel, same `tw:ws:{channel}` shape, fanned out in-process by `user_id`
+#: instead of `symbol` — see `api/routes/websocket.py`'s `/ws/alerts` route.
+ALERT_BROADCAST_CHANNEL: Final = "tw:ws:alerts"
 
 
 def quote_cache_key(symbol: str) -> str:
@@ -110,12 +115,16 @@ class MarketBroadcastService:
         cache: Cache,
         *,
         channel: str = BROADCAST_CHANNEL,
+        alerts_channel: str | None = None,
         clock: Callable[[], dt.datetime] | None = None,
     ) -> None:
         self._consumer = consumer
         self._broadcaster = broadcaster
         self._cache = cache
         self._channel = channel
+        #: `None` unless the caller also subscribed this consumer to `tw.alerts.v1` — a
+        #: worker that never sees an `AlertEvent` has no reason to name a second channel.
+        self._alerts_channel = alerts_channel
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
         self._stats = BroadcastStats()
 
@@ -158,8 +167,11 @@ class MarketBroadcastService:
         return self._stats
 
     async def _broadcast_one(self, event: MarketEvent) -> None:
+        channel = self._channel
+        if isinstance(event, AlertEvent) and self._alerts_channel is not None:
+            channel = self._alerts_channel
         message = event.model_dump(mode="json")
-        await self._broadcaster.publish(self._channel, message)
+        await self._broadcaster.publish(channel, message)
         self._stats.published += 1
 
         keys = cache_keys_for(event)

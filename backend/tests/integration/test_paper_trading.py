@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.kafka_support import FakeProducerClient, kafka_settings
 from tradewatch.application.strategy import CompiledStrategy, Signal, StrategyParams, StrategySpec
 from tradewatch.domain.entities import Bar
 from tradewatch.domain.enums import (
@@ -40,9 +41,17 @@ from tradewatch.infrastructure.database.models import (
     StrategyDeployment,
     User,
 )
+from tradewatch.infrastructure.events.kafka import KafkaEventPublisher, Topics
 from tradewatch.workers.paper_trading import PaperTradingService
 
 pytestmark = pytest.mark.integration
+
+
+async def _publisher() -> KafkaEventPublisher:
+    """A publisher over a fake producer client — nothing here needs a real broker."""
+    publisher = KafkaEventPublisher(kafka_settings(), client=FakeProducerClient(), topics=Topics())
+    await publisher.start()
+    return publisher
 
 _START = dt.datetime(2026, 3, 2, 14, 30, tzinfo=dt.UTC)
 # The golden fixture from tests/unit/test_backtest_engine.py::TestGoldenBacktest: SMA(2)/
@@ -146,11 +155,23 @@ class TestGoldenFixtureLive:
         self, session: AsyncSession, user: User, instrument: Instrument
     ) -> None:
         _deployment, portfolio = await _make_deployment(session, user=user, instrument=instrument)
-        service = PaperTradingService(consumer=None, database=_FakeDatabase(session))  # type: ignore[arg-type]
+        producer_client = FakeProducerClient()
+        publisher = KafkaEventPublisher(kafka_settings(), client=producer_client, topics=Topics())
+        await publisher.start()
+        service = PaperTradingService(
+            consumer=None,  # type: ignore[arg-type]
+            database=_FakeDatabase(session),
+            publisher=publisher,
+        )
         await service.warm_up()
 
         for day, close in enumerate(_CLOSES):
             await service.handle_bar(_bar_event(symbol=instrument.symbol, day=day, close=close))
+
+        # The Alert Dispatcher's other input, alongside anomalies (ARCHITECTURE.md §3.8):
+        # every fill this deployment produced was also published to tw.fills.v1, not just
+        # persisted to Postgres.
+        assert producer_client.topics() == ["tw.fills.v1", "tw.fills.v1"]
 
         orders = (
             (await session.execute(select(Order).where(Order.portfolio_id == portfolio.id)))
@@ -179,7 +200,11 @@ class TestGoldenFixtureLive:
         self, session: AsyncSession, user: User, instrument: Instrument
     ) -> None:
         _deployment, portfolio = await _make_deployment(session, user=user, instrument=instrument)
-        service = PaperTradingService(consumer=None, database=_FakeDatabase(session))  # type: ignore[arg-type]
+        service = PaperTradingService(
+            consumer=None,  # type: ignore[arg-type]
+            database=_FakeDatabase(session),
+            publisher=await _publisher(),
+        )
         await service.warm_up()
 
         # Warm up to just before the crossover, then redeliver the entry bar twice — exactly
@@ -246,7 +271,11 @@ class TestFailureIsolation:
             session, user=other_user, instrument=instrument
         )
 
-        service = PaperTradingService(consumer=None, database=_FakeDatabase(session))  # type: ignore[arg-type]
+        service = PaperTradingService(
+            consumer=None,  # type: ignore[arg-type]
+            database=_FakeDatabase(session),
+            publisher=await _publisher(),
+        )
         await service.warm_up()
 
         # Force the erroring deployment to be reached *before* the healthy one regardless of
@@ -298,7 +327,11 @@ class TestOrderRateCeiling:
         deployment, portfolio = await _make_deployment(
             session, user=user, instrument=instrument, max_orders_per_minute=2
         )
-        service = PaperTradingService(consumer=None, database=_FakeDatabase(session))  # type: ignore[arg-type]
+        service = PaperTradingService(
+            consumer=None,  # type: ignore[arg-type]
+            database=_FakeDatabase(session),
+            publisher=await _publisher(),
+        )
         await service.warm_up()
 
         zigzag = [10, 20, 10, 20, 10, 20, 10, 20]
@@ -331,7 +364,11 @@ class TestLifecycleReconciliation:
         would keep trading it forever.
         """
         deployment, portfolio = await _make_deployment(session, user=user, instrument=instrument)
-        service = PaperTradingService(consumer=None, database=_FakeDatabase(session))  # type: ignore[arg-type]
+        service = PaperTradingService(
+            consumer=None,  # type: ignore[arg-type]
+            database=_FakeDatabase(session),
+            publisher=await _publisher(),
+        )
         await service.warm_up()
 
         for day, close in enumerate(_CLOSES[:3]):

@@ -72,7 +72,7 @@ class TestConnectAndDisconnect:
             manager = ws_app.state.ws_manager
             (connection,) = manager._connections.values()
             # Lower-case input is upper-cased, matching every other symbol path in this API.
-            assert connection.symbols == {"AAPL", "MSFT"}
+            assert connection.keys == {"AAPL", "MSFT"}
 
     def test_two_independent_connections_are_both_tracked(
         self, ws_app: FastAPI, token: str
@@ -180,6 +180,6 @@ def _wait_for_symbols(app: FastAPI, expected: set[str]) -> None:
     """
     deadline = time.monotonic() + 2.0
     (connection,) = app.state.ws_manager._connections.values()
-    while connection.symbols != expected and time.monotonic() < deadline:
+    while connection.keys != expected and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert connection.symbols == expected
+    assert connection.keys == expected

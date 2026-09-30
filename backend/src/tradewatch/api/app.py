@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from tradewatch import __version__
 from tradewatch.api.errors import error_response, install_exception_handlers
 from tradewatch.api.routes import (
+    alerts,
     anomalies,
     auth,
     backtests,
@@ -30,6 +31,7 @@ from tradewatch.api.routes import (
 )
 from tradewatch.api.routes.health import clear_readiness_checks, register_readiness_check
 from tradewatch.api.routes.websocket import ConnectionManager
+from tradewatch.application.broadcasting import ALERT_BROADCAST_CHANNEL
 from tradewatch.config.env import load_env_file
 from tradewatch.config.settings import Settings, get_settings
 from tradewatch.infrastructure.cache import RedisCache
@@ -111,11 +113,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws_manager.start()
         app.state.ws_manager = ws_manager
 
+        # Phase 9: a second connection registry and Redis channel, filtering by `user_id`
+        # instead of `symbol` — see `api/routes/websocket.py`'s module docstring for why
+        # this is a second *instance* of `ConnectionManager`, not a second implementation.
+        ws_alerts_manager = ConnectionManager(
+            cache, channel=ALERT_BROADCAST_CHANNEL, filter_key="user_id"
+        )
+        ws_alerts_manager.start()
+        app.state.ws_alerts_manager = ws_alerts_manager
+
         try:
             yield
         finally:
             clear_readiness_checks()
             await ws_manager.stop()
+            await ws_alerts_manager.stop()
             await cache.disconnect()
             await database.disconnect()
             log.info("api.stopped")
@@ -184,6 +196,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(portfolios.router)
     app.include_router(deployments.router)
     app.include_router(anomalies.router)
+    app.include_router(alerts.router)
     app.include_router(websocket.router)
     return app
 

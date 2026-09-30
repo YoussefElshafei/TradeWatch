@@ -7,6 +7,7 @@
 
 import { Navigate, Route, Routes } from 'react-router-dom';
 
+import { AlertCenter } from './components/AlertCenter';
 import { BacktestForm } from './components/BacktestForm';
 import { BacktestResultsPage } from './components/BacktestResults';
 import { Dashboard } from './components/Dashboard';
@@ -32,6 +33,7 @@ export function App() {
         <Route path="/backtests/:id" element={<BacktestResultsPage />} />
         <Route path="/portfolios" element={<PortfoliosPage />} />
         <Route path="/portfolios/:id" element={<PortfolioDetailPage />} />
+        <Route path="/alerts" element={<AlertCenter />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

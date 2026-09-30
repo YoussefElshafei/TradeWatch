@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -33,9 +34,11 @@ from tradewatch.config.settings import (
 )
 from tradewatch.domain.enums import AlertSeverity, BarInterval
 from tradewatch.domain.events import (
+    AlertEvent,
     AnomalyEvent,
     BarEvent,
     MarketEvent,
+    OrderFilledEvent,
     QuoteEvent,
     TradeEvent,
     deterministic_event_id,
@@ -47,9 +50,11 @@ __all__ = [
     "FakeConsumerClient",
     "FakeProducerClient",
     "FakeRecord",
+    "alert",
     "anomaly",
     "bar",
     "factory",
+    "fill",
     "kafka_settings",
     "quote",
     "settings_with",
@@ -141,6 +146,56 @@ def anomaly(
         model_name=model_name,
         model_version=model_version,
         features={"return": Decimal("0.08"), "volume_z": Decimal(score)},
+    )
+
+
+def fill(
+    symbol: str = "AAPL",
+    *,
+    price: str = "100",
+    quantity: str = "10",
+) -> OrderFilledEvent:
+    """Not built through `EventFactory`: a fill is derived from a committed DB row, not
+    received from a provider.
+    """
+    return OrderFilledEvent(
+        event_id=uuid.uuid4(),
+        symbol=symbol,
+        occurred_at=MOMENT,
+        ingested_at=MOMENT,
+        source="internal",
+        producer="paper-trading@1.0",
+        correlation_id=deterministic_event_id(symbol, "fill"),
+        order_id=uuid.uuid4(),
+        fill_id=uuid.uuid4(),
+        portfolio_id=uuid.uuid4(),
+        price=Decimal(price),
+        quantity=Decimal(quantity),
+        commission=Decimal("0"),
+        slippage_bps=Decimal("0"),
+    )
+
+
+def alert(
+    symbol: str = "AAPL",
+    *,
+    severity: AlertSeverity = AlertSeverity.WARNING,
+) -> AlertEvent:
+    return AlertEvent(
+        event_id=uuid.uuid4(),
+        symbol=symbol,
+        occurred_at=MOMENT,
+        ingested_at=MOMENT,
+        source="internal",
+        producer="alert-dispatcher@1.0",
+        correlation_id=deterministic_event_id(symbol, "alert"),
+        alert_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        alert_rule_id=uuid.uuid4(),
+        triggering_event_type="anomaly.detected",
+        severity=severity,
+        title="Unusual activity",
+        body="AAPL moved outside its usual range.",
     )
 
 

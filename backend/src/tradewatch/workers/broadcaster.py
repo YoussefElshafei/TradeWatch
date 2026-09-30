@@ -2,6 +2,7 @@
 
 ```
 Kafka (trades, quotes, bars.1m) -> MarketBroadcastService -> Redis Pub/Sub -> /ws/market
+Kafka (tw.alerts.v1)            -> MarketBroadcastService -> Redis Pub/Sub -> /ws/alerts
 ```
 
 **The third consumer group.** `processor-persist` writes to PostgreSQL, `bar-aggregator`
@@ -9,6 +10,12 @@ folds trades into candles, and this one — `TW_KAFKA_BROADCAST_GROUP` — relay
 connected browsers and invalidates their cached reads. All three read the same topics with
 independent offsets; killing this one only stops live updates, exactly as killing the
 aggregator only stops new bars (`ARCHITECTURE.md` §3.3, ADR-0001).
+
+**Phase 9 added `tw.alerts.v1`.** `ARCHITECTURE.md` §7.4 names one logical "API broadcaster"
+consumer for every topic a WebSocket route relays — this file, not a second one — so alerts
+join the same consumer group and the same `MarketBroadcastService` rather than getting a
+parallel implementation. It gets its own Redis channel (`ALERT_BROADCAST_CHANNEL`) because
+`/ws/alerts` fans out by `user_id`, not `symbol` — see `api/routes/websocket.py`.
 
 Unlike the aggregator, this process touches no database at all — see
 `application/broadcasting/service.py` for why it needs no `consumer_progress` tracking
@@ -22,7 +29,7 @@ import contextlib
 import signal
 import sys
 
-from tradewatch.application.broadcasting import MarketBroadcastService
+from tradewatch.application.broadcasting import ALERT_BROADCAST_CHANNEL, MarketBroadcastService
 from tradewatch.config.env import load_env_file
 from tradewatch.config.settings import ConfigurationError, Settings, get_settings
 from tradewatch.infrastructure.cache import RedisCache
@@ -72,12 +79,14 @@ async def run_broadcaster(
         topics=topics,
         dead_letters=dead_letters,
         group_id=settings.kafka.kafka_broadcast_group,
-        # Every channel a browser can subscribe to: trades, quotes, and closed 1-minute
-        # bars. Higher-interval bars are derived server-side from these and never
-        # published of their own accord (§9 of PROJECT_STATE.md).
-        subscribe_to=topics.market,
+        # Every channel a browser can subscribe to: trades, quotes, closed 1-minute bars
+        # (higher intervals are derived server-side and never published of their own
+        # accord — §9 of PROJECT_STATE.md), and Phase 9's alerts.
+        subscribe_to=(*topics.market, topics.alerts),
     )
-    service = MarketBroadcastService(consumer, broadcaster=cache, cache=cache)
+    service = MarketBroadcastService(
+        consumer, broadcaster=cache, cache=cache, alerts_channel=ALERT_BROADCAST_CHANNEL
+    )
 
     await consumer.start()
     log.info(

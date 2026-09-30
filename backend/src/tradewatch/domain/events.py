@@ -33,10 +33,12 @@ from tradewatch.domain.enums import AlertSeverity, BarInterval
 
 __all__ = [
     "TRADEWATCH_NAMESPACE",
+    "AlertEvent",
     "AnomalyEvent",
     "BarEvent",
     "EventType",
     "MarketEvent",
+    "OrderFilledEvent",
     "QuoteEvent",
     "TradeEvent",
     "deterministic_event_id",
@@ -59,6 +61,8 @@ class EventType(StrEnum):
     BAR_CLOSED = "market.bar.closed"
     BAR_CORRECTED = "market.bar.corrected"
     ANOMALY_DETECTED = "anomaly.detected"
+    ORDER_FILLED = "order.filled"
+    ALERT_RAISED = "alert.raised"
 
 
 def deterministic_event_id(*parts: object) -> uuid.UUID:
@@ -331,6 +335,47 @@ class AnomalyEvent(MarketEvent):
         )
 
 
+class OrderFilledEvent(MarketEvent):
+    """One execution against a paper-trading order (Phase 7/9's meeting point).
+
+    Published so the Alert Dispatcher (Phase 9) has a live trading-side signal to evaluate
+    rules against, alongside `AnomalyEvent` — `ARCHITECTURE.md` §3.8 names both as its inputs.
+    The `fills` table remains the source of truth for positions (Phase 7's own rebuild job
+    proves that); this event is a notification derived from an already-committed fill, never
+    the write path itself.
+    """
+
+    event_type: Literal[EventType.ORDER_FILLED] = EventType.ORDER_FILLED
+    order_id: uuid.UUID
+    fill_id: uuid.UUID
+    portfolio_id: uuid.UUID
+    price: Decimal = Field(gt=0)
+    quantity: Decimal = Field(gt=0)
+    commission: Decimal = Field(ge=0)
+    slippage_bps: Decimal
+
+
+class AlertEvent(MarketEvent):
+    """A notification raised for one user by the Alert Dispatcher (Phase 9).
+
+    `symbol` is the triggering event's symbol — every alert this phase can produce (from an
+    anomaly or a fill) has one. `triggering_event_type` names what set the rule off
+    (`"anomaly.detected"`, `"order.filled"`) as a plain string rather than reusing this
+    envelope's own `event_type` field, which is always `"alert.raised"` here — the two answer
+    different questions and collapsing them would make the more useful one unrecoverable.
+    """
+
+    event_type: Literal[EventType.ALERT_RAISED] = EventType.ALERT_RAISED
+    alert_id: uuid.UUID
+    user_id: uuid.UUID
+    alert_rule_id: uuid.UUID
+    triggering_event_type: str = Field(min_length=1, max_length=50)
+    severity: AlertSeverity
+    title: str = Field(min_length=1, max_length=200)
+    body: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 def event_summary(event: MarketEvent) -> dict[str, Any]:
     """The fields worth putting in a log line.
 
@@ -356,4 +401,8 @@ def event_summary(event: MarketEvent) -> dict[str, Any]:
             "severity": event.severity.value,
             "model_name": event.model_name,
         }
+    elif isinstance(event, OrderFilledEvent):
+        summary |= {"price": str(event.price), "quantity": str(event.quantity)}
+    elif isinstance(event, AlertEvent):
+        summary |= {"user_id": str(event.user_id), "severity": event.severity.value}
     return summary

@@ -320,6 +320,10 @@ class KafkaSettings(_Group):
     #: offsets mean a detector restart, a model reload, or a slow scoring pass never affects
     #: any other consumer of the same topic, and vice versa.
     kafka_anomaly_detector_group: str = "anomaly-detector"
+    #: The Alert Dispatcher's group (Phase 9, `ARCHITECTURE.md` §7.4's `alert-dispatcher`).
+    #: The one consumer that reads both `tw.anomalies.v1` and `tw.fills.v1` — its own offsets
+    #: on each mean a dispatcher restart or a noisy rule never affects detection or trading.
+    kafka_alert_dispatcher_group: str = "alert-dispatcher"
     #: Where a brand-new group starts. "earliest", so a consumer added to an existing topic
     #: processes the history instead of silently skipping it.
     kafka_auto_offset_reset: str = "earliest"

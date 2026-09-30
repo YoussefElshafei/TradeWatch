@@ -37,10 +37,12 @@ from typing import Any, Final
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tradewatch.domain.events import (
+    AlertEvent,
     AnomalyEvent,
     BarEvent,
     EventType,
     MarketEvent,
+    OrderFilledEvent,
     QuoteEvent,
     TradeEvent,
 )
@@ -87,6 +89,8 @@ _MODELS: Final[dict[str, type[MarketEvent]]] = {
     EventType.BAR_CLOSED.value: BarEvent,
     EventType.BAR_CORRECTED.value: BarEvent,
     EventType.ANOMALY_DETECTED.value: AnomalyEvent,
+    EventType.ORDER_FILLED.value: OrderFilledEvent,
+    EventType.ALERT_RAISED.value: AlertEvent,
 }
 
 
