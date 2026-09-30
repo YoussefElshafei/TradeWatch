@@ -1,13 +1,21 @@
-"""`/ws/market`: live trades, quotes and closed bars, fanned out from Redis Pub/Sub.
+"""`/ws/market` and `/ws/alerts`: live updates fanned out from Redis Pub/Sub.
 
 ```
 tradewatch-broadcaster -> Redis Pub/Sub (tw:ws:market) -> ConnectionManager -> browsers
+tradewatch-broadcaster -> Redis Pub/Sub (tw:ws:alerts) -> ConnectionManager -> browsers
 ```
 
-One `ConnectionManager` per API process, started at application startup (`api/app.py`). It
-holds exactly one Redis subscription (`RedisCache.subscribe`) and fans a message out
-in-process to every connected client currently interested in that message's symbol — not one
-Redis subscription per client, which would not scale with the number of open browser tabs.
+One `ConnectionManager` **per route**, each started at application startup (`api/app.py`).
+An instance holds exactly one Redis subscription (`RedisCache.subscribe`) and fans a message
+out in-process to every connected client currently interested in it — not one Redis
+subscription per client, which would not scale with the number of open browser tabs.
+
+**Generalized for Phase 9, not duplicated.** `/ws/market` filters by `symbol`; `/ws/alerts`
+(Phase 9) filters by `user_id` instead — a different field on a different kind of message,
+over a different Redis channel. `filter_key` is the one constructor parameter that differs
+between the two; the connection registry, the shared-subscription relay, and the slow-consumer
+handling below are identical, so `/ws/alerts` is a second *instance* of this class, not a
+second implementation of it.
 
 **Authentication (Phase 5, ADR-0010).** The token travels as a `?token=` query parameter,
 not an `Authorization` header — a browser's `WebSocket` constructor cannot set custom headers,
@@ -41,6 +49,7 @@ from starlette import status
 from starlette.websockets import WebSocketState
 
 from tradewatch.application.auth import (
+    AccessTokenClaims,
     ExpiredAccessTokenError,
     InvalidAccessTokenError,
     decode_access_token,
@@ -51,7 +60,7 @@ from tradewatch.config.settings import Settings
 from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.observability.logging import get_logger
 
-__all__ = ["ConnectionManager", "router"]
+__all__ = ["ConnectionManager", "get_alerts_manager", "get_manager", "router"]
 
 router = APIRouter(tags=["market data"])
 
@@ -74,15 +83,25 @@ def _new_queue() -> asyncio.Queue[dict[str, Any]]:
 @dataclass(slots=True)
 class _Connection:
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=_new_queue)
-    symbols: set[str] = field(default_factory=set)
+    #: The values this connection wants delivered — symbols for `/ws/market`, a lone
+    #: `user_id` for `/ws/alerts`. Generic on purpose: see the module docstring.
+    keys: set[str] = field(default_factory=set)
 
 
 class ConnectionManager:
-    """Owns every open `/ws/market` connection for one API process."""
+    """Owns every open connection for one route, on one API process."""
 
-    def __init__(self, cache: RedisCache, *, channel: str = BROADCAST_CHANNEL) -> None:
+    def __init__(
+        self,
+        cache: RedisCache,
+        *,
+        channel: str = BROADCAST_CHANNEL,
+        filter_key: str = "symbol",
+    ) -> None:
         self._cache = cache
         self._channel = channel
+        #: Which field of a decoded message a connection's `keys` are matched against.
+        self._filter_key = filter_key
         self._connections: dict[uuid.UUID, _Connection] = {}
         self._relay_task: asyncio.Task[None] | None = None
 
@@ -109,15 +128,15 @@ class ConnectionManager:
     def unregister(self, connection_id: uuid.UUID) -> None:
         self._connections.pop(connection_id, None)
 
-    def subscribe(self, connection_id: uuid.UUID, symbols: set[str]) -> None:
+    def subscribe(self, connection_id: uuid.UUID, keys: set[str]) -> None:
         connection = self._connections.get(connection_id)
         if connection is not None:
-            connection.symbols |= symbols
+            connection.keys |= keys
 
-    def unsubscribe(self, connection_id: uuid.UUID, symbols: set[str]) -> None:
+    def unsubscribe(self, connection_id: uuid.UUID, keys: set[str]) -> None:
         connection = self._connections.get(connection_id)
         if connection is not None:
-            connection.symbols -= symbols
+            connection.keys -= keys
 
     @property
     def connection_count(self) -> int:
@@ -128,17 +147,17 @@ class ConnectionManager:
             self._dispatch(message)
 
     def _dispatch(self, message: dict[str, Any]) -> None:
-        """Fan a decoded message out to every connection currently subscribed to its symbol.
+        """Fan a decoded message out to every connection currently subscribed to its key.
 
         Separated from :meth:`_relay` so the filtering rule — "only a connection watching
-        this symbol receives it" — is testable on its own, without a real Redis subscription
-        to drive it.
+        this key receives it" — is testable on its own, without a real Redis subscription to
+        drive it.
         """
-        symbol = message.get("symbol")
-        if symbol is None:
+        key = message.get(self._filter_key)
+        if key is None:
             return
         for connection in self._connections.values():
-            if symbol not in connection.symbols:
+            if key not in connection.keys:
                 continue
             self._deliver(connection, message)
 
@@ -163,6 +182,13 @@ def get_manager(websocket: WebSocket) -> ConnectionManager:
     return manager  # type: ignore[no-any-return]
 
 
+def get_alerts_manager(websocket: WebSocket) -> ConnectionManager:
+    manager = getattr(websocket.app.state, "ws_alerts_manager", None)
+    if manager is None:
+        raise RuntimeError("the alerts WebSocket connection manager was not attached at startup")
+    return manager  # type: ignore[no-any-return]
+
+
 def _get_settings(websocket: WebSocket) -> Settings:
     """`api/dependencies.get_settings_dep`'s WebSocket-flavoured twin.
 
@@ -184,9 +210,9 @@ def _get_cache(websocket: WebSocket) -> RedisCache:
     return cache  # type: ignore[no-any-return]
 
 
-async def _authenticate(websocket: WebSocket, token: str | None) -> dt.datetime | None:
-    """Verify the token before `.accept()`, per ADR-0010. Returns its expiry, or `None`
-    after having already closed the connection — the caller's cue to stop.
+async def _authenticate(websocket: WebSocket, token: str | None) -> AccessTokenClaims | None:
+    """Verify the token before `.accept()`, per ADR-0010. Returns the decoded claims, or
+    `None` after having already closed the connection — the caller's cue to stop.
     """
     if token is None:
         await websocket.close(
@@ -210,7 +236,7 @@ async def _authenticate(websocket: WebSocket, token: str | None) -> dt.datetime 
         )
         return None
 
-    return claims.expires_at
+    return claims
 
 
 async def _close_when_expired(websocket: WebSocket, expires_at: dt.datetime) -> None:
@@ -242,8 +268,8 @@ async def market_stream(
     change the watchlist at any time. The `symbols` query parameter is an optional shortcut
     for the common case of "subscribe to these from the start."
     """
-    expires_at = await _authenticate(websocket, token)
-    if expires_at is None:
+    claims = await _authenticate(websocket, token)
+    if claims is None:
         return
 
     manager = get_manager(websocket)
@@ -254,11 +280,55 @@ async def market_stream(
         manager.subscribe(connection_id, initial)
 
     sender = asyncio.create_task(_send_loop(websocket, queue))
-    watchdog = asyncio.create_task(_close_when_expired(websocket, expires_at))
+    watchdog = asyncio.create_task(_close_when_expired(websocket, claims.expires_at))
     try:
         while True:
             raw = await websocket.receive_text()
             _handle_control_message(manager, connection_id, raw)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        sender.cancel()
+        watchdog.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sender
+        with contextlib.suppress(asyncio.CancelledError):
+            await watchdog
+        manager.unregister(connection_id)
+
+
+@router.websocket("/ws/alerts")
+async def alert_stream(
+    websocket: WebSocket,
+    token: str | None = Query(
+        default=None,
+        description="Access token. A browser WebSocket cannot set an Authorization header, "
+        "so it travels here instead.",
+    ),
+) -> None:
+    """Live delivery of the connecting user's own alerts (Phase 9, `ARCHITECTURE.md` §3.8).
+
+    No `symbols`-style query parameter and no subscribe/unsubscribe protocol, unlike
+    `/ws/market`: an alert is private to the user it was raised for, so the only key this
+    connection is ever subscribed to is the authenticated user's own id, decoded from the
+    token — never one a client could supply and use to read someone else's alerts.
+    """
+    claims = await _authenticate(websocket, token)
+    if claims is None:
+        return
+
+    manager = get_alerts_manager(websocket)
+    await websocket.accept()
+    connection_id, queue = manager.register()
+    manager.subscribe(connection_id, {str(claims.user_id)})
+
+    sender = asyncio.create_task(_send_loop(websocket, queue))
+    watchdog = asyncio.create_task(_close_when_expired(websocket, claims.expires_at))
+    try:
+        while True:
+            # Nothing the client sends changes this connection's subscription — see the
+            # docstring — so incoming frames are only read to detect a disconnect.
+            await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:

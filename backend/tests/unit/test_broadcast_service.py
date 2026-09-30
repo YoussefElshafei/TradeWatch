@@ -16,8 +16,9 @@ from collections.abc import AsyncIterator, Sequence
 
 import pytest
 
-from tests.kafka_support import bar, quote, trade
+from tests.kafka_support import alert, bar, quote, trade
 from tradewatch.application.broadcasting import (
+    ALERT_BROADCAST_CHANNEL,
     BROADCAST_CHANNEL,
     MarketBroadcastService,
     bars_cache_key,
@@ -113,6 +114,51 @@ class TestPublishing:
             "market.quote",
             "market.bar.closed",
         ]
+
+
+class TestAlertRouting:
+    """Phase 9: the same service relays `tw.alerts.v1`, but to its own channel — `/ws/alerts`
+    fans out by `user_id`, not `symbol`, so it cannot share `/ws/market`'s channel.
+    """
+
+    async def test_an_alert_goes_to_the_alerts_channel_when_one_is_configured(self) -> None:
+        consumer = ScriptedConsumer([[alert()]])
+        broadcaster = RecordingBroadcaster()
+        service = MarketBroadcastService(
+            consumer, broadcaster, RecordingCache(), alerts_channel=ALERT_BROADCAST_CHANNEL
+        )
+
+        await service.run(max_batches=1)
+
+        assert len(broadcaster.published) == 1
+        channel, message = broadcaster.published[0]
+        assert channel == ALERT_BROADCAST_CHANNEL
+        assert channel != BROADCAST_CHANNEL
+        assert message["event_type"] == "alert.raised"
+
+    async def test_an_alert_falls_back_to_the_market_channel_when_none_is_configured(
+        self,
+    ) -> None:
+        """A worker that never subscribed to `tw.alerts.v1` never passes `alerts_channel` —
+        this is what keeps that the safe default rather than a silent misroute."""
+        _, broadcaster, _ = await _run_one_batch([alert()])
+
+        channel, _ = broadcaster.published[0]
+        assert channel == BROADCAST_CHANNEL
+
+    async def test_market_events_are_unaffected_by_an_alerts_channel_being_configured(
+        self,
+    ) -> None:
+        consumer = ScriptedConsumer([[trade(symbol="AAPL")]])
+        broadcaster = RecordingBroadcaster()
+        service = MarketBroadcastService(
+            consumer, broadcaster, RecordingCache(), alerts_channel=ALERT_BROADCAST_CHANNEL
+        )
+
+        await service.run(max_batches=1)
+
+        channel, _ = broadcaster.published[0]
+        assert channel == BROADCAST_CHANNEL
 
 
 class TestCacheInvalidation:

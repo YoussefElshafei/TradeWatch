@@ -81,16 +81,19 @@ class TestCreation:
             "tw.market.quotes.v1",
             "tw.market.bars.1m.v1",
             "tw.anomalies.v1",
+            "tw.fills.v1",
+            "tw.alerts.v1",
             "tw.dlq.v1",
         }
 
     async def test_nothing_beyond_this_phase_is_created(self) -> None:
-        """No signals, orders, fills, or alerts topics. Nothing produces them yet."""
+        """No signals or orders topics. Nothing consumes those independently of the fill
+        they eventually produce."""
         admin = FakeAdmin()
 
         await ensure_topics(kafka_settings(), admin=admin)
 
-        assert len(admin.created_names()) == 5
+        assert len(admin.created_names()) == 7
 
     async def test_existing_topics_are_left_alone(self) -> None:
         """Idempotent, so every worker can call it at startup."""
@@ -106,7 +109,13 @@ class TestCreation:
 
         created = await ensure_topics(kafka_settings(), admin=admin)
 
-        assert set(created) == {"tw.market.quotes.v1", "tw.market.bars.1m.v1", "tw.anomalies.v1"}
+        assert set(created) == {
+            "tw.market.quotes.v1",
+            "tw.market.bars.1m.v1",
+            "tw.anomalies.v1",
+            "tw.fills.v1",
+            "tw.alerts.v1",
+        }
 
     async def test_a_concurrent_creator_is_not_an_error(self) -> None:
         """Two workers racing to create a topic: one loses, and losing is success."""
@@ -159,6 +168,9 @@ class TestTopicShape:
         assert admin.config_of("tw.market.trades.v1")["retention.ms"] == RETENTION["market.trades"]
         assert admin.config_of("tw.market.quotes.v1")["retention.ms"] == RETENTION["market.quotes"]
         assert admin.config_of("tw.market.bars.1m.v1")["retention.ms"] == RETENTION["market.bars"]
+        assert admin.config_of("tw.anomalies.v1")["retention.ms"] == RETENTION["anomalies"]
+        assert admin.config_of("tw.fills.v1")["retention.ms"] == RETENTION["fills"]
+        assert admin.config_of("tw.alerts.v1")["retention.ms"] == RETENTION["alerts"]
         assert admin.config_of("tw.dlq.v1")["retention.ms"] == RETENTION["dlq"]
 
     async def test_quotes_are_kept_for_the_shortest_time(self) -> None:

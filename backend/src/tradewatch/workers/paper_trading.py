@@ -2,7 +2,14 @@
 
 ```
 Kafka (tw.market.bars.1m.v1) → PaperTradingService → PostgreSQL (orders, fills, positions)
+                                                    → Kafka (tw.fills.v1)
 ```
+
+**`tw.fills.v1` (Phase 9).** Postgres remains the write path and the source of truth — the
+publish happens only after a fill's transaction has committed, and a publish failure is
+logged and swallowed rather than retried, because the fill itself is already durable. This
+is a notification for the Alert Dispatcher (`ARCHITECTURE.md` §3.8), never a second way to
+record a fill.
 
 The fourth independent reader of the bar topic, in its own group `paper-trading` — killing
 this worker affects no other consumer, and vice versa (ADR-0001).
@@ -69,7 +76,7 @@ from tradewatch.config.env import load_env_file
 from tradewatch.config.settings import ConfigurationError, Settings, get_settings
 from tradewatch.domain.entities import Bar
 from tradewatch.domain.enums import BarInterval, DeploymentStatus, OrderStatus, OrderType
-from tradewatch.domain.events import BarEvent, deterministic_event_id
+from tradewatch.domain.events import BarEvent, OrderFilledEvent, deterministic_event_id
 from tradewatch.domain.ids import new_id
 from tradewatch.infrastructure.database.models import Bar as BarRow
 from tradewatch.infrastructure.database.models import Fill as FillRow
@@ -78,6 +85,7 @@ from tradewatch.infrastructure.database.models import Portfolio, Strategy, Strat
 from tradewatch.infrastructure.database.session import Database
 from tradewatch.infrastructure.events.kafka import (
     KafkaEventConsumer,
+    KafkaEventPublisher,
     Topics,
     ensure_topics,
     open_dead_letter_sink,
@@ -145,9 +153,15 @@ class SessionSource(Protocol):
 class PaperTradingService:
     """Consume bars, evaluate running deployments, execute and persist. See module docstring."""
 
-    def __init__(self, consumer: EventBatchConsumer, database: SessionSource) -> None:
+    def __init__(
+        self,
+        consumer: EventBatchConsumer,
+        database: SessionSource,
+        publisher: KafkaEventPublisher,
+    ) -> None:
         self._consumer = consumer
         self._database = database
+        self._publisher = publisher
         self._contexts: dict[uuid.UUID, _DeploymentContext] = {}
 
     async def warm_up(self) -> None:
@@ -322,7 +336,7 @@ class PaperTradingService:
                 # same idempotency guard `client_order_id`'s own docstring describes.
                 return
 
-            await self._persist_outcome(
+            fill_event = await self._persist_outcome(
                 session,
                 deployment=deployment,
                 portfolio=portfolio,
@@ -330,7 +344,22 @@ class PaperTradingService:
                 client_order_id=client_order_id,
                 outcome=outcome,
                 bar=bar,
+                bar_event=event,
             )
+
+        if fill_event is not None:
+            try:
+                await self._publisher.publish(fill_event)
+            except Exception as error:
+                # The fill is already durably stored; a live subscriber missing this one
+                # notification is not the same failure as losing the fill itself.
+                log.warning(
+                    "paper_trading.publish_failed",
+                    deployment_id=str(deployment.id),
+                    symbol=event.symbol,
+                    error=str(error),
+                    error_type=type(error).__name__,
+                )
 
     async def _other_positions_cost_basis(
         self, session: AsyncSession, portfolio_id: uuid.UUID, *, exclude_instrument_id: uuid.UUID
@@ -355,7 +384,8 @@ class PaperTradingService:
         client_order_id: str,
         outcome: OrderExecuted | OrderRejected,
         bar: Bar,
-    ) -> None:
+        bar_event: BarEvent,
+    ) -> OrderFilledEvent | None:
         if isinstance(outcome, OrderRejected):
             order = OrderRow(
                 id=new_id(),
@@ -381,7 +411,7 @@ class PaperTradingService:
                 deployment_id=str(deployment.id),
                 reason_code=outcome.reason_code,
             )
-            return
+            return None
 
         fill = outcome.fill
         order = OrderRow(
@@ -398,9 +428,10 @@ class PaperTradingService:
         )
         session.add(order)
         await session.flush()
+        fill_id = new_id()
         session.add(
             FillRow(
-                id=new_id(),
+                id=fill_id,
                 order_id=order.id,
                 price=fill.price,
                 quantity=fill.quantity,
@@ -430,6 +461,22 @@ class PaperTradingService:
             side=outcome.side.value,
             quantity=str(fill.quantity),
             price=str(fill.price),
+        )
+        return OrderFilledEvent(
+            event_id=fill_id,
+            symbol=bar_event.symbol,
+            occurred_at=fill.filled_at,
+            ingested_at=dt.datetime.now(dt.UTC),
+            source=bar_event.source,
+            producer="paper-trading@1.0",
+            correlation_id=bar_event.correlation_id,
+            order_id=order.id,
+            fill_id=fill_id,
+            portfolio_id=portfolio.id,
+            price=fill.price,
+            quantity=fill.quantity,
+            commission=fill.commission,
+            slippage_bps=fill.slippage_bps,
         )
 
     async def run(
@@ -520,9 +567,11 @@ async def run_paper_trading(
         # Bars only. This service has no business with trades or quotes.
         subscribe_to=(topics.bars_1m,),
     )
-    service = PaperTradingService(consumer, database)
+    publisher = KafkaEventPublisher(settings.kafka, topics=topics)
+    service = PaperTradingService(consumer, database, publisher)
 
     await consumer.start()
+    await publisher.start()
     await service.warm_up()
     log.info(
         "paper_trading.starting",
@@ -534,6 +583,7 @@ async def run_paper_trading(
         await service.run(max_batches=max_batches, stop=stop)
     finally:
         await consumer.stop()
+        await publisher.stop()
         if dlq_producer is not None:
             with contextlib.suppress(Exception):
                 await dlq_producer.stop()

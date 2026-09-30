@@ -6,12 +6,12 @@
 keyspace; everything after it is a contract and is not configurable, because a topic whose
 name depends on a setting is a topic no other team can find.
 
-**As built through Phase 8:** the four market/DLQ topics from Phase 2, plus `tw.anomalies.v1`
-(Phase 8's Anomaly Detection Service is its producer). §7.2 also lists `tw.signals.v1`,
-`tw.orders.v1` and `tw.fills.v1`, and `tw.alerts.v1` — none of them is created here. Phases 6
-and 7 persist signals, orders, and fills straight to PostgreSQL rather than publishing them,
-and Phase 9's Alert Dispatcher does not exist yet, so those topics would still be empty names
-in a broker — the decoration this codebase keeps refusing.
+**As built through Phase 9:** the four market/DLQ topics from Phase 2, `tw.anomalies.v1`
+(Phase 8), and `tw.fills.v1` / `tw.alerts.v1` (Phase 9 — the phase where the Phase 6/7 trading
+track and the Phase 8 detection track meet in one consumer, the Alert Dispatcher). §7.2 also
+lists `tw.signals.v1` and `tw.orders.v1` — neither is created here, because nothing consumes
+raw signals or order-submission events independently of the fill they eventually produce; a
+topic with no real consumer is the decoration this codebase keeps refusing.
 
 **Bars: 1-minute only, for now.** §7.2 specifies `tw.market.bars.1m.v1`, one topic per
 interval. Only 1-minute bars travel over Kafka in Phase 2, because that is the only interval
@@ -28,10 +28,12 @@ from typing import Final
 
 from tradewatch.domain.enums import BarInterval
 from tradewatch.domain.events import (
+    AlertEvent,
     AnomalyEvent,
     BarEvent,
     EventType,
     MarketEvent,
+    OrderFilledEvent,
     QuoteEvent,
     TradeEvent,
 )
@@ -80,6 +82,18 @@ class Topics:
         return f"{self.prefix}.anomalies.v{SCHEMA_MAJOR}"
 
     @property
+    def fills(self) -> str:
+        """Phase 9: the Paper Trading Engine's fill notifications — one of the Alert
+        Dispatcher's two inputs, alongside `anomalies` (`ARCHITECTURE.md` §3.8).
+        """
+        return f"{self.prefix}.fills.v{SCHEMA_MAJOR}"
+
+    @property
+    def alerts(self) -> str:
+        """Phase 9: the Alert Dispatcher's output, relayed live over `/ws/alerts`."""
+        return f"{self.prefix}.alerts.v{SCHEMA_MAJOR}"
+
+    @property
     def dead_letter(self) -> str:
         """One DLQ for every consumer (§7.2), not one per topic.
 
@@ -97,7 +111,7 @@ class Topics:
     @property
     def all(self) -> tuple[str, ...]:
         """Every topic every phase built so far creates."""
-        return (*self.market, self.anomalies, self.dead_letter)
+        return (*self.market, self.anomalies, self.fills, self.alerts, self.dead_letter)
 
     def for_event(self, event: MarketEvent) -> str:
         """The topic an event belongs on.
@@ -112,6 +126,10 @@ class Topics:
                 return self.quotes
             case AnomalyEvent():
                 return self.anomalies
+            case OrderFilledEvent():
+                return self.fills
+            case AlertEvent():
+                return self.alerts
             case BarEvent() if event.interval is _PUBLISHED_BAR_INTERVAL:
                 return self.bars_1m
             case BarEvent():

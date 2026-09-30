@@ -67,6 +67,9 @@ tradewatch-paper-trading = "tradewatch.workers.paper_trading:main"
 # Phase 8: the fifth independent reader of tw.market.bars.1m.v1 (ADR-0001), scoring each
 # closed bar for statistically unusual activity and publishing tw.anomalies.v1.
 tradewatch-anomaly-detector = "tradewatch.workers.anomaly_detector:main"
+# Phase 9: consumes tw.anomalies.v1 and tw.fills.v1, the one point where the Phase 6/7
+# trading track and the Phase 8 detection track meet.
+tradewatch-alert-dispatcher = "tradewatch.workers.alert_dispatcher:main"
 tradewatch-ingest = "tradewatch.workers.ingestion:main"
 # The Phase 1 single-process path, kept for development without a broker. No replay, no
 # restart safety, no independent failure domains — see docs/PIPELINE.md.
