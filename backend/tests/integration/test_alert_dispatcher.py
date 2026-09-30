@@ -76,7 +76,7 @@ async def _service(
     publisher = KafkaEventPublisher(kafka_settings(), client=client, topics=Topics())
     await publisher.start()
     service = AlertDispatcherService(
-        consumer=None,  # type: ignore[arg-type] — only `.run()` needs a real consumer
+        consumer=None,  # type: ignore[arg-type]  # only `.run()` needs a real consumer
         database=_FakeDatabase(session),
         publisher=publisher,
         alert_cap_per_user_per_hour=cap,

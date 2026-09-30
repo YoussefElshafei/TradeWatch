@@ -36,9 +36,7 @@ class AlertRuleRepository(OwnedRepository[AlertRule]):
         """Every enabled rule, across every user. See the module docstring for why this is
         the one unscoped query on this repository.
         """
-        result = await self.session.execute(
-            select(AlertRule).where(AlertRule.is_enabled.is_(True))
-        )
+        result = await self.session.execute(select(AlertRule).where(AlertRule.is_enabled.is_(True)))
         return list(result.scalars().all())
 
 
