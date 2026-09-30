@@ -1,6 +1,6 @@
 # TradeWatch — project state and handover
 
-**As of:** 2026-09-21, after Phase 3.
+**As of:** 2026-09-30, after Phase 9.
 **Audience:** whoever — or whatever — picks this up next, with no prior context.
 
 ---
@@ -18,14 +18,14 @@ That distinction matters more here than in most projects:
 - **`ARCHITECTURE.md` describes the finished system**, including components that do not
   exist yet. It is a specification, not a description. Sections carry "as built" notes where
   reality has caught up; everything else is still a plan.
-- **`DEVELOPMENT_PLAN.md` describes the route**, in twelve phases. Phases 0–3 are marked
-  complete and are; 4–12 are not started.
+- **`DEVELOPMENT_PLAN.md` describes the route**, in twelve phases. Phases 0–9 are built;
+  10–12 are not started.
 - **`ADR/` records decisions**, including ones for phases not yet built. An ADR being
   "Accepted" means the decision is made, not that the code exists.
 - **This file is the reconciliation** between those three and the actual state of the tree.
 
 If this document and any other disagree, this document is either right or out of date —
-check `git log` for what has landed since 2026-09-21 and trust the code.
+check `git log` for what has landed since 2026-09-30 and trust the code.
 
 ---
 
@@ -70,37 +70,59 @@ worth looking at. **Match it.** A correct patch written in a flatter style is a 
 | 1 | Vertical slice | **Complete** |
 | 2 | Kafka backbone and service split | **Complete** |
 | 3 | Real market data and historical depth | **Complete** (see the caveat in §16) |
-| 4 | Live streaming and caching | Not started |
-| 5 | Authentication, authorization, multi-tenancy | Not started |
-| 6 | Strategy core and backtesting | Not started |
-| 7 | Paper trading | Not started |
-| 8 | Anomaly detection | Not started |
-| 9 | Alerts and notifications | Not started |
-| 10 | Observability and performance measurement | Not started |
+| 4 | Live streaming and caching | **Complete** |
+| 5 | Authentication, authorization, multi-tenancy | **Complete** |
+| 6 | Strategy core and backtesting | **Complete** |
+| 7 | Paper trading | **Complete** |
+| 8 | Anomaly detection | **Complete** (frontend gap closed — see §16) |
+| 9 | Alerts and notifications | **Complete** |
+| 10 | Observability and performance measurement | Not started ← **next** |
 | 11 | End-to-end and failure-recovery hardening | Not started |
 | 12 | AWS deployment | Not started |
 
 **What runs today, end to end:**
 
 ```
-Provider → normalize → Ingestion → Kafka ─┬→ Processor  → PostgreSQL → FastAPI → React
-                                          └→ Aggregator → PostgreSQL (1m bars → 5m/1h/1d)
+Provider → normalize → Ingestion → Kafka
+                                      │
+                        ┌─────────────┼──────────────┬──────────────┬───────────────┐
+                        ▼             ▼              ▼              ▼               ▼
+                   Processor     Aggregator     Broadcaster    Paper trading   Anomaly detector
+                        │             │              │              │               │
+                        ▼             ▼              ▼              ▼               ▼
+                   PostgreSQL    PostgreSQL     Redis Pub/Sub   PostgreSQL      PostgreSQL
+                        │                            │                              │
+                        │                            ▼                              ▼
+                        │                       /ws/market                   tw.anomalies.v1
+                        ▼                                                           │
+                  FastAPI (auth,                                                    ▼
+                  owner-scoped                                               Alert dispatcher
+                  resources) → React                                       → PostgreSQL, /ws/alerts
 ```
 
-Three independent OS processes and a one-shot backfill job. **Two consumer groups** read the
-same trade topic with independent offsets — the fan-out ADR-0001 chose Kafka for. Any of them
-can be restarted, or be absent, without the others losing an event.
+Nine long-running OS processes (`tradewatch-api`, `-producer`, `-consumer`, `-aggregator`,
+`-broadcaster`, `-backtest-runner`, `-paper-trading`, `-anomaly-detector`,
+`-alert-dispatcher`) plus `-backfill`, a one-shot job. **Six consumer groups** read from
+shared topics with independent offsets, the fan-out ADR-0001 chose Kafka for. Any of them can
+be restarted, or be absent, without the others losing an event (§9's "Consumer groups").
 
-**Test and check status at the close of Phase 2:**
+The React app is no longer a single market view: sign-in/sign-up, a strategy editor and
+backtest runner, a portfolio/deployment view, an anomaly feed with a per-detection
+explanation panel, and an alert centre all sit behind `ProtectedRoute`, live-updated over
+`/ws/market` and `/ws/alerts` (§13 has the full page list).
 
-See the Phase 3 report for the exact current numbers; as of the close of Phase 3 the suite
-is roughly 630 backend unit/API tests, 245 backend integration tests, and 22 frontend tests,
-with ruff, ruff-format, mypy strict, import-linter (5 contracts), ESLint, Prettier and tsc
-all clean.
+**Test and check status, current:**
 
-**The work is uncommitted.** `git log` shows two commits: `Initial commit` and the Phase 1
-slice. All Phase 2 and Phase 3 work is in the working tree. Committing and pushing is reserved
-for the repository owner — see §20.
+1218 backend tests pass (841 unit/API, 377 integration against real PostgreSQL, Redis and
+Kafka — the CI workflow now provisions all three for `backend-integration`, §9's "Consumer
+groups"), plus 4 `provider`-marked tests that stay opt-in. 85 frontend tests across 14 files.
+ruff, ruff-format, mypy strict, import-linter (5 contracts), ESLint, Prettier and `tsc` all
+clean. One pre-existing, documented flaky test remains open — see §17's Phase 11 entry.
+
+**The work is committed and pushed.** Every phase through 9 is merged into `main`, most
+recently via a `--no-ff` merge per phase branch (`git log --graph` shows the shape). Commit
+and push access is no longer withheld from an AI session working this repository — see §20,
+which now reflects that.
 
 ---
 
@@ -134,7 +156,7 @@ ESLint 10, Prettier 3.9. Node 22+ required; Node 24.21 / npm 12 in use.
 | Service | Image | Host port | Notes |
 | --- | --- | --- | --- |
 | PostgreSQL | `postgres:17-alpine` | `127.0.0.1:5432` | Also creates `tradewatch_test` on first start |
-| Redis | `redis:8-alpine` | `127.0.0.1:6379` | Persistence **off** on purpose (ADR-0003). Not yet used by any code |
+| Redis | `redis:8-alpine` | `127.0.0.1:6379` | Persistence **off** on purpose (ADR-0003). Caching, Pub/Sub fan-out (Phase 4), and rate limiting (Phase 5) |
 | Kafka | `apache/kafka:4.0.0` | `127.0.0.1:9092` | Single broker, KRaft, no ZooKeeper |
 
 All bind to loopback only: development credentials must not be reachable from the network.
@@ -480,9 +502,10 @@ Groups: `app`, `market`, `provider`, `kafka`, `database`, `redis`, `execution`, 
 git-ignored. The rule: *if a number could reasonably differ in another environment, on
 another venue, or after calibration against real data, it is a setting rather than a literal.*
 
-Settings that exist but are **not yet read by any code**: the `execution`, `anomaly` and
-`alerts` groups (Phases 6, 8, 9), and most of `security` (Phase 5). `redis` is read only for
-`cache_enabled`; nothing caches yet.
+Every settings group is read by production code as of Phase 9: `execution` by the backtest
+runner and paper trading engine, `anomaly` by the detection service, `alerts` by the
+dispatcher, `security` by the auth flow, and `redis` for caching (Phase 4) as well as
+`cache_enabled`.
 
 ---
 
@@ -558,24 +581,34 @@ $K/kafka-console-consumer.sh --bootstrap-server 127.0.0.1:9092 --topic tw.dlq.v1
 
 ## 12. The API surface
 
-**Implemented today — six routes, all read-only:**
+**Implemented today, by router:**
 
-| Endpoint | Purpose |
+| Router | Purpose |
 | --- | --- |
-| `GET /health` | Liveness. Deliberately does **not** check the database: a liveness probe that fails during an outage turns it into a restart loop |
-| `GET /ready` | Readiness. Checks each registered dependency |
-| `GET /api/v1/instruments` | The universe; populates the symbol selector |
-| `GET /api/v1/instruments/{symbol}` | One instrument |
-| `GET /api/v1/market/{symbol}/bars` | OHLCV over `[start, end)`, with `interval` and `limit` |
-| `GET /api/v1/market/{symbol}/latest` | Last stored trade and quote |
+| `health` | `GET /health` (liveness, deliberately not database-backed — a liveness probe that fails during an outage turns it into a restart loop) and `GET /ready` (checks each registered dependency) |
+| `market` | `GET /api/v1/instruments[/{symbol}]`, `GET /api/v1/market/{symbol}/bars`, `GET /api/v1/market/{symbol}/latest` — read-only, unauthenticated, market data belongs to no one user |
+| `auth` | `POST /api/v1/auth/{register,login,refresh,logout}`, `GET /api/v1/auth/me` (Phase 5, ADR-0010) |
+| `strategies` | Owner-scoped CRUD (Phase 6, ADR-0006) |
+| `backtests` | Owner-scoped create/list/get, over the shared Execution Simulator (Phase 6, ADR-0007) |
+| `portfolios` | Owner-scoped CRUD |
+| `deployments` | Owner-scoped lifecycle: create/start/pause/resume/stop (Phase 7) |
+| `anomalies` | `GET /api/v1/anomalies` — global, unauthenticated, same reasoning as `market` (Phase 8, ADR-0008) |
+| `alerts` | Owner-scoped alert-rule CRUD, `GET /api/v1/alerts`, `POST /api/v1/alerts/{id}/ack` (Phase 9) |
+| `websocket` | `/ws/market` (Phase 4) and `/ws/alerts` (Phase 9) — one `ConnectionManager` class, two instances, filtering by `symbol` and `user_id` respectively |
 
-There is no client-facing route that writes a tick, a bar or an instrument, and a test
-asserts no `/api/v1/market/*` route exposes anything but `GET`.
+Every owner-scoped router goes through `OwnedRepository` (§5's "The ports" and
+`infrastructure/repositories/base.py`): a resource that exists but belongs to someone else is
+a 404, never a 403, so its existence can't be probed. `market` and `anomalies` are the two
+deliberate exceptions — data that belongs to the market, not to a user (documented in each
+router's own module docstring).
 
 **Status codes carry meaning:**
 
-- **404** — unknown symbol. Stop asking.
-- **422** — the request is wrong: reversed range, naive timestamp, limit out of bounds.
+- **404** — unknown resource, or one that exists but isn't the caller's.
+- **422** — the request is wrong: reversed range, naive timestamp, limit out of bounds, an
+  unknown `strategy_type`, an `alert_rules.event_types` value the dispatcher never consumes.
+- **409** — a uniqueness constraint (a duplicate strategy or alert-rule name for the same
+  user).
 - **200 with an empty list** — the request was fine and there is no data. A market that has
   not opened is not an error; returning 404 makes a normal Sunday indistinguishable from a
   typo. This is the one most often got wrong.
@@ -584,34 +617,48 @@ asserts no `/api/v1/market/*` route exposes anything but `GET`.
 Errors use one envelope: `{"error": {"code", "message", "details", "request_id"}}`. Every
 response carries `X-Request-ID`.
 
-**Everything else in `ARCHITECTURE.md` §8.1 is unbuilt:** auth, strategies, backtests,
-portfolios, deployments, anomalies, alerts, `/metrics`, and the entire WebSocket surface §8.2.
+**Still unbuilt:** `/metrics` (Phase 10).
 
 ---
 
 ## 13. The frontend
 
-Sixteen files. One view: a symbol selector, a price chart, the latest price.
+No longer one view. Routes, all but `/login`/`/register` behind `ProtectedRoute`
+(`App.tsx`):
 
-```
-src/api/{health,market}.ts      typed fetch wrappers
-src/components/MarketView.tsx   the view
-src/components/PriceChart.tsx   Recharts line chart
-src/hooks/useAsync.ts           loading / error / data
-src/lib/format.ts               money and time formatting
-src/config.ts                   VITE_ configuration
-```
+| Route | Component | What it does |
+| --- | --- | --- |
+| `/` | `Dashboard` | The original symbol selector, price chart, latest price — still the landing page |
+| `/login`, `/register` | `LoginPage`, `RegisterPage` | Phase 5 auth flow |
+| `/strategies`, `/strategies/new` | `StrategiesPage`, `StrategyEditor` | Owner-scoped strategy CRUD (Phase 6) |
+| `/backtests/new`, `/backtests/:id` | `BacktestForm`, `BacktestResults` | Run and read a backtest against the shared Execution Simulator |
+| `/portfolios`, `/portfolios/:id` | `PortfoliosPage`, `PortfolioDetailPage` | Owner-scoped portfolios and deployments (Phase 7) |
+| `/anomalies` | `AnomalyFeed` | The feed, a symbol filter that doubles as score history, and a per-detection explanation panel over `GET /api/v1/anomalies` (Phase 8 — this page was the one deliverable Phase 8 shipped without; closed in this pass) |
+| `/alerts` | `AlertCenter` | Alert-rule builder, rule list, and a live-updating feed over `/ws/alerts` (Phase 9) |
 
-It handles four states, because getting them wrong is what makes a data UI feel broken:
-**loading**, **error** (with the API's message and a retry), **empty** (a known symbol with
-no data — not an error), **success**.
+Each `api/*.ts` module is a small, self-contained fetch wrapper with its own `ApiError`,
+mirroring the matching `api/schemas/*.py` file — deliberately duplicated rather than shared,
+same reasoning `api/strategies.ts`'s own docstring gives: temporary, until `ARCHITECTURE.md`
+§8.3's generated-from-OpenAPI types land.
+
+Every page still handles the same four states MarketView established, because getting them
+wrong is what makes a data UI feel broken: **loading**, **error** (with the API's message and
+a retry), **empty** (a known symbol/resource with no data — not an error), **success**. Live
+pages (`/ws/market`, `/ws/alerts`) add a fifth: connection status, reconnecting with backoff
+rather than going silent.
 
 Charting is Recharts (ADR-0013), chosen because SVG output can be asserted against in jsdom.
 A canvas chart renders nothing a test can see, so the end-to-end claim would be unverifiable.
+The anomaly feed's "score history" is a filtered, newest-first table rather than a second
+chart — the feed already reads as a timeline once narrowed to one symbol, and a charting
+dependency this phase does not need was left for the design pass rather than added here.
 
 **Known gaps:** API types are hand-written rather than generated from the committed OpenAPI
-schema (§8.3 wants generation, and it needs a codegen step). The chart has fixed pixel
+schema (§8.3 wants generation, and it needs a codegen step). The price chart has fixed pixel
 dimensions so it is testable in jsdom; responsive rendering needs a `ResizeObserver` polyfill.
+Every page here is **functional, not designed** — plain, unstyled markup matching the rest of
+the app, on purpose: a visual design pass is the next piece of work, not part of any phase
+above.
 
 ---
 
@@ -698,27 +745,31 @@ Immutable once accepted. A decision that changes gets a **new** ADR superseding 
 | 0000 | Record architecture decisions | — |
 | 0001 | Kafka as the event backbone, introduced in Phase 2 | **Yes** |
 | 0002 | PostgreSQL as the system of record | **Yes** |
-| 0003 | Redis: a bounded, justified scope (cache + fan-out, never truth) | No — Phase 4 |
+| 0003 | Redis: a bounded, justified scope (cache + fan-out, never truth) | **Yes** — Phase 4 |
 | 0004 | Abstract the market data provider; default to synthetic | **Yes** |
 | 0005 | JSON + Pydantic event serialization, versioned by topic | **Yes** |
-| 0006 | Strategies are configuration, **not user code** | No — Phase 6 |
-| 0007 | One strategy and execution core shared by backtest and paper trading | No — Phase 6/7 |
-| 0008 | Anomaly detection: scope, method, and honest claims | No — Phase 8 |
+| 0006 | Strategies are configuration, **not user code** | **Yes** — Phase 6 |
+| 0007 | One strategy and execution core shared by backtest and paper trading | **Yes** — Phase 6/7 |
+| 0008 | Anomaly detection: scope, method, and honest claims | **Yes** — Phase 8 |
 | 0009 | Decimal money, never floats | **Yes** |
-| 0010 | JWT access tokens with rotating refresh tokens | No — Phase 5 |
-| 0011 | Alpaca as the market data provider (closes D1) | Adapter exists; unused |
+| 0010 | JWT access tokens with rotating refresh tokens | **Yes** — Phase 5 |
+| 0011 | Alpaca as the market data provider (closes D1) | Adapter exists; still never run against the live API — see §18 |
 | 0012 | Deterministic event identity for market data | **Yes** |
 | 0013 | Recharts for the price chart (closes D12) | **Yes** |
 | 0014 | Consumer acknowledgement boundary and dead-letter policy | **Yes** |
+| 0015 | Event-time bar aggregation, lateness window, corrections | **Yes** — Phase 3 |
+| 0016 | Idempotent bar aggregation under redelivery (supersedes 0015's restart story) | **Yes** — Phase 3 |
 
-**Two that will bite whoever builds Phase 6, so read them first:**
+**Two that will bite whoever extends the strategy or execution code next, so read them
+first:**
 
 - **ADR-0006** — strategies are declarative configuration, not arbitrary code. Do not build a
   plugin system. D17 ("strategy plugin system for user-supplied code") is marked *probably
   never*.
 - **ADR-0007** — the execution simulator is a **shared library** used by both backtesting and
-  paper trading. Building a backtest-only engine makes the Phase 7 backtest/paper consistency
-  test — named in the plan's risk table as "the tripwire" — impossible without a rewrite.
+  paper trading (built, Phase 6/7). Splitting it into a backtest-only engine would make the
+  backtest/paper consistency test — named in the plan's risk table as "the tripwire," and
+  passing today — impossible without a rewrite.
 
 ---
 
@@ -820,59 +871,106 @@ Synthetic market data reaching a chart in a browser through a real database.
 
 ---
 
+### Phase 4 — Live streaming and caching ✅
+
+**Delivered:** `/ws/market` with subscribe/unsubscribe; a Kafka→WebSocket broadcaster
+(`tradewatch-broadcaster`, the third independent reader of the trade/quote/bar topics) fanning
+out over Redis Pub/Sub; a bounded per-connection queue implementing the F19 slow-consumer
+drop-and-resync policy (a client that falls behind gets one `market.resync` message instead of
+an unbounded backlog); cache-aside reads for instruments/bars/latest-price with TTLs and
+explicit invalidation; a reconnecting frontend WebSocket hook with `event_id`-deduped trade
+tape, live price, and a connection-status badge.
+**Exit, confirmed:** a trade appears in the browser without a refresh; `TW_CACHE_ENABLED=false`
+degrades to uncached reads rather than failing (F9), and is tested that way.
+
+### Phase 5 — Authentication, authorization, multi-tenancy ✅
+
+**Delivered:** Argon2id hashing; register/login/refresh-with-rotation/logout/me; roles;
+**ownership enforcement in the repository layer** — `OwnedRepository` (§5) takes an actor on
+every method and returns `None` for a row that doesn't exist *or* isn't the caller's, so a
+route can't forget the check; Redis-backed rate limiting; security headers; `audit_log`; the
+frontend auth flow (`LoginPage`, `RegisterPage`, `ProtectedRoute`).
+**Exit, confirmed:** every owner-scoped endpoint 404s a non-owner rather than 403ing (which
+would leak that the resource exists); refresh-token reuse detection revokes the session; 429
+carries `Retry-After`; an expired token closes an open WebSocket.
+**One flaky test surfaced here, still open** — see the Phase 11 entry below.
+
+### Phase 6 — Strategy core and backtesting ✅
+
+**Delivered:** a pure, incremental indicator library (SMA, EMA, RSI, ATR, rolling
+volatility); the strategy core's `evaluate(state, bar) -> (state, signals)` contract; the
+**Execution Simulator as a shared library** (ADR-0007 — the same code backtests and paper
+trading both run through, not two engines that could disagree); a Backtest Runner worker;
+owner-scoped strategy and backtest endpoints; a strategy editor and equity-curve UI.
+**Exit, confirmed:** the golden backtest passes against a committed fixture dataset; running
+the same backtest twice produces identical results including the trade sequence; a lookahead
+test fails if a strategy is handed a future bar; changing `TW_EXEC_SLIPPAGE_BPS` changes both
+the result and the stored `execution_config`.
+
+### Phase 7 — Paper trading ✅
+
+**Delivered:** a live strategy driver consuming `tw.market.bars.1m.v1` with per-deployment
+state restored on start (`started_at` anchors the replay window, untouched by pause/resume —
+see the deployments router's own reasoning); the Paper Trading Engine (position sizing, risk
+limits, the F15 order-rate ceiling) built on Phase 6's shared Execution Simulator; owner-scoped
+deployment lifecycle endpoints (`create → start ⇄ pause → stop`, each transition rejecting the
+wrong starting status with 409); a position-rebuild job regenerating positions from fills
+alone; a portfolio/deployment UI.
+**Found and fixed in this phase's own audit:** a real layering violation
+(`PaperTradingService` had drifted into `application/`, which may not import
+`infrastructure` — moved to `workers/`), plus a rollup-bucket truncation bug, a cache
+refresh-rate bug, multi-signal data loss, and an RSI bounds mismatch — all fixed before the
+phase closed, not left as known issues.
+
+### Phase 8 — Anomaly detection ✅
+
+**Delivered:** a shared feature pipeline (return, realized volatility, volume/trade-count
+z-score, spread) used identically by training and serving, to rule out train/serve skew; a
+robust median/MAD z-score baseline that ships first and is the F17 fallback if no model is
+active; an offline `IsolationForest` training pipeline (`scripts/train_anomaly_model.py`) that
+only activates a model if it beats the baseline on held-out, chronologically-split data — and
+records the comparison either way; the detection service publishing `tw.anomalies.v1`;
+`GET /api/v1/anomalies`; a written model card (`docs/MODEL_CARD.md`); a grep-based test
+enforcing ADR-0008's wording constraint across code, docs, commit messages, and the frontend.
+**Exit, confirmed:** injected synthetic anomalies are detected; the ML detector is compared
+against the baseline and only goes live if it wins; every stored detection is explainable from
+its own `features` payload; no text anywhere claims detection of manipulation, fraud, or
+financial crime.
+**Gap found and closed in this pass, not at the time:** the anomaly feed, score history, and
+per-detection explanation panel `DEVELOPMENT_PLAN.md` committed to as a Phase 8 frontend
+deliverable were silently never built — the backend and its tests were complete and this one
+page was skipped without being flagged anywhere. Built now (`/anomalies`, §13) rather than
+left open, since the gap was real and Phase 9 depends on the same UI conventions.
+
+### Phase 9 — Alerts and notifications ✅
+
+**Delivered:** rule evaluation spanning **both** tracks — `application/alerts/rules.py`
+matches a rule against `AnomalyEvent` (Phase 8) and `OrderFilledEvent` (Phase 7), the one
+point the trading and detection tracks meet, in one dispatcher consumer group; an Alert
+Dispatcher with dedupe keys (`UNIQUE (alert_rule_id, dedupe_key)`, the same idempotency
+pattern `orders.client_order_id` uses for a redelivered bar), a per-(rule, symbol) cooldown,
+and a per-user hourly cap with a digest (F18) rather than either flooding a user during a
+volatile session or going silent about the rest of the storm; `tw.alerts.v1` relayed live over
+`/ws/alerts`, which **generalizes** Phase 4's `ConnectionManager` (a `filter_key` parameter —
+`symbol` for `/ws/market`, `user_id` for `/ws/alerts`) rather than duplicating it; owner-scoped
+alert-rule CRUD and an alert feed with acknowledge; a frontend alert centre.
+**Exit, confirmed:** a burst of 10 qualifying events against a cap of 3 produces exactly 3
+alerts and one digest, not ten; a rule matching nothing, or a disabled rule, produces nothing;
+a cross-user delivery test confirms alerts reach only their owner; acknowledging an
+already-acknowledged alert is still a 204, proving idempotence.
+**A pre-existing CI gap found and closed alongside this phase:** `backend-integration` had no
+Redis or Kafka service, so `test_auth_routes.py` (Phase 5, unrelated to Phase 9) errored on
+every run and `test_kafka_pipeline.py`/`test_bar_aggregator.py` silently skipped. Both
+services are now provisioned in `.github/workflows/ci.yml`, matching `docker-compose.yml`'s
+config; a warm-up step (`scripts/wait_for_kafka_metadata.py`) absorbs a measured
+~2-second metadata-propagation lag a freshly-started single-node Kafka broker has that a
+long-lived one does not.
+
+---
+
 ## 17. What remains
 
-### Phase 4 — Live streaming and caching ← **next**
-
-WebSocket `/ws/market` with subscribe/unsubscribe; a Kafka→WebSocket broadcaster with Redis
-Pub/Sub fan-out; slow-consumer handling (F19); Redis caching per §10 with TTLs and
-invalidation; a live chart and trade tape.
-**Exit:** a trade appears in the browser without a refresh; with `TW_CACHE_ENABLED=false`
-every test still passes; stopping Redis degrades but does not break (F9).
-
-### Phase 5 — Authentication, authorization, multi-tenancy
-
-Argon2id hashing; register/login/refresh-with-rotation/logout/me; roles; **ownership
-enforcement in the repository layer** (every owner-scoped query takes an actor); Redis rate
-limiting; security headers; `audit_log`; the frontend auth flow.
-**Exit:** for every owner-scoped endpoint, a test that user B gets 404 on user A's resource;
-refresh reuse detection revokes; 429 with `Retry-After`; an expired token closes an open
-WebSocket.
-
-### Phase 6 — Strategy core and backtesting
-
-Indicator library (SMA, EMA, RSI, ATR, rolling volatility — pure and incremental); the
-strategy core's `evaluate(state, bar) -> (state, signals)` contract; the **Execution
-Simulator as a shared library** (ADR-0007); a Backtest Runner worker; strategy CRUD and
-backtest endpoints; a strategy editor and equity-curve UI.
-**Exit:** the golden backtest passes against a committed fixture dataset; running the same
-backtest twice produces identical results *including the trade sequence*; a lookahead test
-fails if a strategy is given a future bar; property-based tests on position and P&L
-arithmetic; changing `TW_EXEC_SLIPPAGE_BPS` changes the result **and** the stored
-`execution_config`.
-
-### Phase 7 — Paper trading
-
-Live strategy driver consuming `tw.market.bars.1m.v1` with per-deployment state restore; the
-Paper Trading Engine (position sizing, risk limits, order-rate ceiling F15); deployment
-lifecycle API; a position rebuild job that regenerates positions from fills alone; portfolio
-UI.
-
-### Phase 8 — Anomaly detection
-
-Rolling per-symbol features; a robust z-score baseline (median/MAD) shipped **first**; an
-offline training pipeline; the detection service emitting `anomaly.detected`; `GET /anomalies`
-and an anomaly feed; **a written model card**.
-**Exit:** injected synthetic anomalies are detected; the ML detector is compared against the
-baseline on held-out data; every stored detection is explainable from its own `features`
-payload; no text anywhere claims detection of manipulation or fraud.
-
-### Phase 9 — Alerts and notifications
-
-Rule evaluation, an Alert Dispatcher with dedupe keys, per-rule cooldown and a per-user hourly
-cap (F18); `tw.alerts.v1` → `/ws/alerts`; alert-rule CRUD; an alert centre.
-
-### Phase 10 — Observability and performance measurement
+### Phase 10 — Observability and performance measurement ← **next**
 
 Prometheus metrics across every service; correlation-id propagation from HTTP through Kafka;
 a committed Grafana dashboard; **benchmarks in `benchmarks/`** each recording methodology,
@@ -891,8 +989,8 @@ verification, 2026-09-26; deliberately not fixed there — it is pre-existing te
 Phase 5, unrelated to Phase 6's changes.* The test mints a token with ~1 second of validity
 left and asserts the close arrives inside `pytest.raises(WebSocketDisconnect)`, which wraps
 only `ws.receive_text()`. When that 1-second window elapses during the connect handshake
-itself instead of after — which happens under load, e.g. running alongside the full ~1,050-test
-suite rather than in isolation — the server closes during `client.websocket_connect(...)`'s own
+itself instead of after — which happens under load, e.g. running alongside the full ~1,200-test
+suite (§2 has the current count) rather than in isolation — the server closes during `client.websocket_connect(...)`'s own
 `__enter__`, before `pytest.raises` is active, and the `WebSocketDisconnect` escapes uncaught.
 Passes reliably standalone; intermittent in the full run. Fix is widening the connect/assert
 race margin (e.g. wrap the whole `with` block in `pytest.raises`, not just the receive call) or
@@ -919,14 +1017,14 @@ Strategy core       → Execution Simulator → Backtest Runner → Backtest UI
 Execution Simulator → Paper Trading Engine
 ```
 
-The trading track (6→7) and the detection track (8) depend only on **Phase 5 and on bars from
-Phase 3**, and can be interleaved. Phase 9 needs both.
+The trading track (6→7) and the detection track (8) depended only on **Phase 5 and on bars
+from Phase 3**, and were built in that order; Phase 9 needed both, and was built last.
 
-**Practical consequence:** do not start Phase 6 before Phase 3 and Phase 5. There is currently
-~4 hours of synthetic 1-minute data in one interval; CAGR, Sharpe and drawdown computed from
-that are arithmetic exercises producing authoritative-looking numbers that mean nothing. And
-`strategies` and `portfolios` are owner-scoped, so backtest endpoints built before auth get
-written twice.
+**A caveat this graph doesn't remove just because every phase now exists:** backtest metrics
+(CAGR, Sharpe, drawdown) are only as meaningful as the historical depth behind them. A
+backtest run against a thin synthetic window produces an authoritative-looking number that
+means nothing — check how much history is actually loaded (§16's Phase 3 entry, the backfill
+job) before trusting a result, not just whether the endpoint returns one.
 
 ---
 
@@ -1075,8 +1173,10 @@ the aggregator existed.
 
 From `CLAUDE.md` and the repository's own standards:
 
-1. **Never run `git commit` or `git push`.** Staging, committing and pushing are reserved for
-   the repository owner. Read-only git (`status`, `diff`, `log`) is fine.
+1. **Commit and push are permitted** (updated from earlier phases, where they were withheld):
+   plain `git commit -m` messages, no attribution lines, no heredocs. Merge each phase's
+   branch into `main` with `--no-ff` once its own work is committed, matching `git log
+   --graph`'s existing shape. Never force-push, never rewrite published history.
 2. **Creating and editing files is fully permitted.**
 3. **Do not weaken a check to make it pass.** No removed tests, no relaxed assertions, no
    loosened type checking, no skipped integration tests when the containers could be started.
@@ -1097,17 +1197,18 @@ From `CLAUDE.md` and the repository's own standards:
 
 ## 21. Recommended next step
 
-**Phase 5 — authentication, authorization and multi-tenancy**, or Phase 4 first if a live
-dashboard matters more than reaching the trading track.
+**Phase 10 — observability and performance measurement.** It is the only remaining phase with
+no dependency on anything else unbuilt (§17's Phase 11 wants a failure-injection harness and
+`benchmarks/`-backed numbers to check against; Phase 12 wants both of those plus everything
+else). Concretely: Prometheus metrics across every service, correlation-id propagation from
+HTTP through Kafka, a committed Grafana dashboard, and real benchmarks in `benchmarks/` —
+currently empty, meaning no performance number has ever been quotable about this system.
 
-The plan's own ordering is 4 → 5 → 6, but it also states that the trading track (6→7) and the
-detection track (8) "depend only on Phase 5 and on bars from Phase 3". Phase 3 is now done, so
-**Phase 5 is the only remaining hard prerequisite for Phase 6**.
+A visual design pass on the frontend is also overdue and explicitly not part of any numbered
+phase (§13) — every page through `/anomalies` and `/alerts` is functional, plain, and
+deliberately unstyled. Worth doing whenever it is, but it does not block Phase 10.
 
-Phase 5 matters more than it sounds: `strategies`, `portfolios` and every backtest artefact
-are owner-scoped in the schema, and `ARCHITECTURE.md` §14 puts auth ahead of the strategy
-core. Building Phase 6's API before it means writing those endpoints twice.
-
-Phase 4 is the better choice if the priority is something to look at — it is what makes the
-chart live rather than a snapshot, and it is the first use of Redis, which has been running in
-Compose since Phase 0 without a single consumer.
+The one thing worth closing opportunistically rather than waiting for Phase 11: the flaky
+`test_a_connection_closes_itself_the_instant_its_token_expires` test (§17's Phase 11 entry has
+the full diagnosis and the two candidate fixes) costs nothing to fix now and keeps costing
+CI reruns until someone does.
