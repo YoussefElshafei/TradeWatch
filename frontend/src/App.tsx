@@ -8,6 +8,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { AlertCenter } from './components/AlertCenter';
+import { AnomalyFeed } from './components/AnomalyFeed';
 import { BacktestForm } from './components/BacktestForm';
 import { BacktestResultsPage } from './components/BacktestResults';
 import { Dashboard } from './components/Dashboard';
@@ -34,6 +35,7 @@ export function App() {
         <Route path="/portfolios" element={<PortfoliosPage />} />
         <Route path="/portfolios/:id" element={<PortfolioDetailPage />} />
         <Route path="/alerts" element={<AlertCenter />} />
+        <Route path="/anomalies" element={<AnomalyFeed />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
