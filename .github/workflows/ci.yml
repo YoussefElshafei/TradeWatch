@@ -89,7 +89,7 @@ jobs:
           if-no-files-found: error
 
   backend-integration:
-    name: Backend — integration tests (real PostgreSQL and Redis)
+    name: Backend — integration tests (real PostgreSQL, Redis, and Kafka)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -127,6 +127,44 @@ jobs:
           --health-timeout 3s
           --health-retries 20
 
+      # test_kafka_pipeline.py and test_bar_aggregator.py need a real broker — same KRaft,
+      # single-node config as docker/docker-compose.yml's `kafka` service (ADR-0001), so a
+      # passing job here means the same topology as local dev, not a CI-only simplification.
+      # `kafka` is this service's own network alias (GitHub Actions services get one equal to
+      # their key, same as a compose service name), which is what lets the broker resolve its
+      # own advertised INTERNAL listener and controller-quorum address below.
+      kafka:
+        image: apache/kafka:4.0.0
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+          # Same two-listener split as docker-compose: other containers on this job's network
+          # reach the broker as `kafka:19092`; the runner's own steps (where pytest actually
+          # runs) reach it as `127.0.0.1:9092` — the same "container network vs. host" split,
+          # just with the runner VM standing in for the docker-compose host machine.
+          KAFKA_LISTENERS: INTERNAL://:19092,CONTROLLER://:9093,HOST://:9092
+          KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,HOST://127.0.0.1:9092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,HOST:PLAINTEXT
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+          CLUSTER_ID: tradewatch-ci-cluster
+          TZ: UTC
+        ports:
+          - 9092:9092
+        options: >-
+          --health-cmd "sh -c '/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list || exit 1'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 12
+          --health-start-period 20s
+
     env:
       # The tests build the schema by running the real migrations, then roll back every
       # test. ARCHITECTURE.md §11.2: no mocking of the database.
@@ -143,6 +181,16 @@ jobs:
           cache-dependency-glob: backend/uv.lock
 
       - run: uv sync --all-groups --frozen
+
+      - name: Warm up Kafka topic metadata
+        # A freshly-started single-node KRaft broker's list_topics() lags create_topics()
+        # by a measurable couple of seconds — a long-lived broker shows none of this lag,
+        # but this service is freshly started on every run, exactly the condition that
+        # reproduces it. test_kafka_pipeline.py calls ensure_topics() twice back to back
+        # with no delay (its own idempotency check) and would race this every time
+        # otherwise. See scripts/wait_for_kafka_metadata.py's docstring for how this was
+        # measured.
+        run: uv run python scripts/wait_for_kafka_metadata.py
 
       - name: Integration tests
         # No skip-if-unavailable here: if PostgreSQL is not reachable in CI that is a
@@ -275,8 +323,7 @@ jobs:
       - name: Compose file is valid
         run: docker compose -f docker/docker-compose.yml config --quiet
 
-  # Phase 2 adds a Kafka service to backend-integration; Redis landed with Phase 9's fix
-  # for test_auth_routes.py's real-Redis requirement.
+  # Redis and Kafka services landed on backend-integration with Phase 9's CI fixes.
   # Phase 5 adds: security (pip-audit, npm audit, secret scanning, Trivy).
   # Phase 11 adds: e2e (Playwright) and failure-recovery jobs.
   # Phase 10 adds: a nightly performance workflow, separate from this one.
