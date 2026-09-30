@@ -53,6 +53,7 @@ async def _publisher() -> KafkaEventPublisher:
     await publisher.start()
     return publisher
 
+
 _START = dt.datetime(2026, 3, 2, 14, 30, tzinfo=dt.UTC)
 # The golden fixture from tests/unit/test_backtest_engine.py::TestGoldenBacktest: SMA(2)/
 # SMA(3), one long entry at day 3's close, exit at day 5's close.
@@ -303,11 +304,7 @@ class TestFailureIsolation:
         assert healthy_deployment.status is DeploymentStatus.RUNNING
 
         orders = (
-            (
-                await session.execute(
-                    select(Order).where(Order.portfolio_id == healthy_portfolio.id)
-                )
-            )
+            (await session.execute(select(Order).where(Order.portfolio_id == healthy_portfolio.id)))
             .scalars()
             .all()
         )

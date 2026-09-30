@@ -38,7 +38,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        op.f("uq_anomaly_detections_event_id"), "anomaly_detections", type_="unique"
-    )
+    op.drop_constraint(op.f("uq_anomaly_detections_event_id"), "anomaly_detections", type_="unique")
     op.drop_column("anomaly_detections", "event_id")
