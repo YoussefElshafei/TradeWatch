@@ -26,7 +26,7 @@ import {
 } from '../api/backtests';
 import { useAsync } from '../hooks/useAsync';
 import { useAuth } from '../hooks/useAuth';
-import { formatMoney } from '../lib/format';
+import { formatMoney, formatPercent, formatTimestamp } from '../lib/format';
 import { Message } from './MarketView';
 import {
   CartesianGrid,
@@ -85,7 +85,7 @@ function EquityChart({ backtestId }: { backtestId: string }) {
   }
 
   const points: EquityChartPoint[] = state.data.points.map((point) => ({
-    label: new Date(point.as_of).toLocaleDateString(),
+    label: formatTimestamp(point.as_of, 'date'),
     equity: Number(point.total_equity),
     equityText: point.total_equity,
   }));
@@ -170,24 +170,25 @@ function TradeList({ backtestId }: { backtestId: string }) {
               <td>{trade.side}</td>
               <td>{formatMoney(trade.quantity)}</td>
               <td>
-                {formatMoney(trade.entry_price)} @{' '}
-                {new Date(trade.entry_at).toLocaleString()}
+                {formatMoney(trade.entry_price)} @ {formatTimestamp(trade.entry_at)}
               </td>
               <td>
                 {trade.exit_price === null || trade.exit_at === null
                   ? 'still open'
-                  : `${formatMoney(trade.exit_price)} @ ${new Date(trade.exit_at).toLocaleString()}`}
+                  : `${formatMoney(trade.exit_price)} @ ${formatTimestamp(trade.exit_at)}`}
               </td>
               <td
-                style={
-                  pnl === null ? undefined : { color: pnl >= 0 ? 'seagreen' : 'crimson' }
+                className={
+                  pnl === null
+                    ? undefined
+                    : pnl >= 0
+                      ? 'figure-positive'
+                      : 'figure-negative'
                 }
               >
                 {pnl === null ? '—' : formatMoney(trade.pnl ?? '0')}
               </td>
-              <td>
-                {trade.return_pct === null ? '—' : `${formatMoney(trade.return_pct)}%`}
-              </td>
+              <td>{trade.return_pct === null ? '—' : formatPercent(trade.return_pct)}</td>
             </tr>
           );
         })}
@@ -197,7 +198,7 @@ function TradeList({ backtestId }: { backtestId: string }) {
 }
 
 function optionalPct(value: string | null): string {
-  return value === null ? '—' : `${formatMoney(value)}%`;
+  return value === null ? '—' : formatPercent(value);
 }
 
 function MetricsPanel({ metrics }: { metrics: BacktestMetrics }) {
@@ -244,7 +245,7 @@ export function BacktestResultsPage() {
   const { id } = useParams<{ id: string }>();
   if (!id) return null;
   return (
-    <main className="app">
+    <main className="page">
       <BacktestResults backtestId={id} />
     </main>
   );

@@ -61,7 +61,10 @@ export interface BacktestRun {
 
 export interface BacktestRunList {
   count: number;
-  runs: BacktestRun[];
+  // Matches `BacktestListResponse.backtests` (`api/schemas/backtests.py`) — not `runs`. No
+  // UI called `fetchBacktests` before the design pass added `BacktestsPage` and the
+  // dashboard's recent-backtests panel, so a `runs` field here had silently never been hit.
+  backtests: BacktestRun[];
 }
 
 export interface BacktestTrade {

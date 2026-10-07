@@ -23,6 +23,7 @@ import {
 import { useAlertSocket, type ConnectionStatus } from '../hooks/useAlertSocket';
 import { useAsync } from '../hooks/useAsync';
 import { useAuth } from '../hooks/useAuth';
+import { formatTimestamp } from '../lib/format';
 import { Message } from './MarketView';
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
@@ -114,7 +115,11 @@ function NewRuleForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <form onSubmit={(event) => void handleSubmit(event)} aria-label="New alert rule">
+    <form
+      className="auth-form"
+      onSubmit={(event) => void handleSubmit(event)}
+      aria-label="New alert rule"
+    >
       <h3>New rule</h3>
       {error && <Message tone="error" title="Could not create the rule" detail={error} />}
       <label>
@@ -249,7 +254,7 @@ function AlertRow({ alert, onChanged }: { alert: Alert; onChanged: () => void })
         {alert.title} {alert.symbol && <em>({alert.symbol})</em>}
       </p>
       <p className="panel-detail">{alert.body}</p>
-      <p className="panel-detail">{new Date(alert.created_at).toLocaleString()}</p>
+      <p className="panel-detail">{formatTimestamp(alert.created_at)}</p>
       {alert.acknowledged_at === null ? (
         <button type="button" disabled={busy} onClick={() => void handleAcknowledge()}>
           Acknowledge
@@ -283,14 +288,14 @@ export function AlertCenter() {
   );
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Alerts</h1>
+    <main className="page">
+      <header className="page-header">
+        <h2>Alerts</h2>
         <LiveBadge status={socket.status} />
       </header>
 
       <section aria-labelledby="rules-heading">
-        <h2 id="rules-heading">Alert rules</h2>
+        <h3 id="rules-heading">Alert rules</h3>
         <NewRuleForm onCreated={reloadRules} />
 
         {rulesState.status === 'loading' && <Message tone="info" title="Loading rules…" />}
@@ -326,7 +331,7 @@ export function AlertCenter() {
       </section>
 
       <section aria-labelledby="feed-heading">
-        <h2 id="feed-heading">Alert feed</h2>
+        <h3 id="feed-heading">Alert feed</h3>
         {alertsState.status === 'loading' && (
           <Message tone="info" title="Loading alerts…" />
         )}
@@ -346,7 +351,9 @@ export function AlertCenter() {
           />
         )}
         {alerts.length > 0 && (
-          <ul className="alert-feed">
+          // `aria-live="polite"` so a screen reader announces a new alert arriving over the
+          // socket, the same way the live badge and trade tape are meant to be felt visually.
+          <ul className="alert-feed" aria-live="polite" aria-relevant="additions">
             {alerts.map((alert) => (
               <AlertRow key={alert.id} alert={alert} onChanged={reloadAlerts} />
             ))}

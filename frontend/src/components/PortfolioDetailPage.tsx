@@ -215,9 +215,9 @@ export function PortfolioDetailPage() {
   const { state: deploymentsState, reload: reloadDeployments } = deploymentsResult;
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Portfolio</h1>
+    <main className="page">
+      <header className="page-header">
+        <h2>Portfolio</h2>
       </header>
 
       {portfolioState.status === 'loading' && (
@@ -236,7 +236,7 @@ export function PortfolioDetailPage() {
       {portfolioState.status === 'success' && (
         <>
           <section aria-labelledby="portfolio-heading">
-            <h2 id="portfolio-heading">{portfolioState.data.name}</h2>
+            <h3 id="portfolio-heading">{portfolioState.data.name}</h3>
             <dl className="quote">
               <div>
                 <dt>Cash balance</dt>
@@ -256,7 +256,7 @@ export function PortfolioDetailPage() {
           </section>
 
           <section aria-labelledby="positions-heading">
-            <h2 id="positions-heading">Positions</h2>
+            <h3 id="positions-heading">Positions</h3>
             {portfolioState.data.positions.length === 0 ? (
               <Message tone="info" title="No open positions" />
             ) : (
@@ -286,7 +286,7 @@ export function PortfolioDetailPage() {
       )}
 
       <section aria-labelledby="deployments-heading">
-        <h2 id="deployments-heading">Deployments</h2>
+        <h3 id="deployments-heading">Deployments</h3>
 
         {deploymentsState.status === 'loading' && (
           <Message tone="info" title="Loading deployments…" />

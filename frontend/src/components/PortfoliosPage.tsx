@@ -57,9 +57,9 @@ export function PortfoliosPage() {
   }
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Portfolios</h1>
+    <main className="page">
+      <header className="page-header">
+        <h2>Portfolios</h2>
       </header>
 
       <form className="auth-form" onSubmit={(event) => void handleSubmit(event)}>

@@ -15,6 +15,7 @@ import { useCallback, useState } from 'react';
 import { type AnomalyDetection, fetchAnomalies } from '../api/anomalies';
 import { fetchInstruments } from '../api/market';
 import { useAsync } from '../hooks/useAsync';
+import { formatTimestamp } from '../lib/format';
 import { Message } from './MarketView';
 
 function ExplanationPanel({ detection }: { detection: AnomalyDetection }) {
@@ -29,8 +30,8 @@ function ExplanationPanel({ detection }: { detection: AnomalyDetection }) {
         ).
       </p>
       <p>
-        Window: {new Date(detection.window_start).toLocaleString()} –{' '}
-        {new Date(detection.window_end).toLocaleString()}
+        Window: {formatTimestamp(detection.window_start)} –{' '}
+        {formatTimestamp(detection.window_end)}
       </p>
       {features.length > 0 && (
         <table>
@@ -83,13 +84,13 @@ export function AnomalyFeed() {
       : undefined;
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Anomaly feed</h1>
+    <main className="page">
+      <header className="page-header">
+        <h2>Anomaly feed</h2>
       </header>
 
       <section aria-labelledby="filter-heading">
-        <h2 id="filter-heading">Filter</h2>
+        <h3 id="filter-heading">Filter</h3>
         <label>
           Symbol (blank = every symbol, newest first)
           <select
@@ -111,7 +112,7 @@ export function AnomalyFeed() {
       </section>
 
       <section aria-labelledby="feed-heading">
-        <h2 id="feed-heading">{symbol ? `${symbol} score history` : 'All detections'}</h2>
+        <h3 id="feed-heading">{symbol ? `${symbol} score history` : 'All detections'}</h3>
 
         {state.status === 'loading' && <Message tone="info" title="Loading detections…" />}
         {state.status === 'error' && (
@@ -145,7 +146,7 @@ export function AnomalyFeed() {
             <tbody>
               {state.data.detections.map((detection) => (
                 <tr key={detection.id}>
-                  <td>{new Date(detection.detected_at).toLocaleString()}</td>
+                  <td>{formatTimestamp(detection.detected_at)}</td>
                   <td>{detection.symbol}</td>
                   <td>{detection.anomaly_score}</td>
                   <td>{detection.threshold}</td>
