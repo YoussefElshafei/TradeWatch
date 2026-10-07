@@ -36,10 +36,12 @@ export function StrategiesPage() {
   }
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Strategies</h1>
-        <Link to="/strategies/new">New strategy</Link>
+    <main className="page">
+      <header className="page-header">
+        <h2>Strategies</h2>
+        <Link to="/strategies/new" className="button-primary">
+          New strategy
+        </Link>
       </header>
 
       {state.status === 'loading' && <Message tone="info" title="Loading strategies…" />}

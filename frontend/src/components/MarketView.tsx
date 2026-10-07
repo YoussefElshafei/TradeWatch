@@ -37,7 +37,7 @@ import {
   type MarketSocketState,
   useMarketSocket,
 } from '../hooks/useMarketSocket';
-import { formatMoney } from '../lib/format';
+import { formatMoney, formatTimestamp } from '../lib/format';
 import { PriceChart } from './PriceChart';
 
 const BAR_LIMIT = 240;
@@ -116,7 +116,13 @@ function LatestPricePanel({
     <dl className="quote" aria-label={`${symbol} latest price`}>
       <div>
         <dt>Last</dt>
-        <dd data-testid="latest-price">{price ? formatMoney(price) : 'no trades yet'}</dd>
+        <dd data-testid="latest-price">
+          {/* Keying on the price value remounts this span on every tick, which replays the
+              CSS flash animation — a cheap, JS-free way to make a live price feel alive. */}
+          <span key={price ?? 'none'} className="price-flash">
+            {price ? formatMoney(price) : 'no trades yet'}
+          </span>
+        </dd>
       </div>
       <div>
         <dt>Bid / Ask</dt>
@@ -148,7 +154,7 @@ function TradeTape({
         {trades.map((trade) => (
           <li key={trade.tapeKey}>
             <span className="trade-tape-time">
-              {new Date(trade.occurred_at).toLocaleTimeString()}
+              {formatTimestamp(trade.occurred_at, 'time')}
             </span>
             <span className="trade-tape-price">{formatMoney(trade.price)}</span>
             <span className="trade-tape-size">×{formatMoney(trade.size)}</span>

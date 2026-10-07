@@ -20,22 +20,29 @@ import { TOKEN_RESPONSE } from './test-support/authFixtures';
 
 import { App } from './App';
 
-const EMPTY_UNIVERSE = { count: 0, instruments: [] };
-
 /**
- * Every route this shell needs to reach on a cold render behind `ProtectedRoute`
- * (Phase 5): `/auth/refresh` so `AuthProvider` resolves to a signed-in session, and the
- * market endpoints `MarketView` itself calls once that session exists.
+ * Every route this shell needs to reach on a cold render behind `ProtectedRoute` (Phase 5):
+ * `/auth/refresh` so `AuthProvider` resolves to a signed-in session, plus every endpoint the
+ * real `Dashboard` now fetches (the design pass's watchlist/portfolio/alert/anomaly/backtest
+ * panels) — each needs its own correctly-shaped empty body, not one universal stub, or a
+ * panel reading `data.portfolios` off a `{ instruments: [] }` response throws during render.
  */
 function stubEmptyApi() {
+  const emptyByPath: [RegExp, unknown][] = [
+    [/\/auth\/refresh/, TOKEN_RESPONSE],
+    [/\/api\/v1\/instruments/, { count: 0, instruments: [] }],
+    [/\/api\/v1\/portfolios/, { count: 0, portfolios: [] }],
+    [/\/api\/v1\/alerts/, { count: 0, alerts: [] }],
+    [/\/api\/v1\/anomalies/, { count: 0, detections: [] }],
+    [/\/api\/v1\/backtests/, { count: 0, backtests: [] }],
+  ];
+
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL) => {
       const url = requestUrl(input);
-      if (url.includes('/auth/refresh')) {
-        return Promise.resolve(new Response(JSON.stringify(TOKEN_RESPONSE)));
-      }
-      return Promise.resolve(new Response(JSON.stringify(EMPTY_UNIVERSE)));
+      const match = emptyByPath.find(([pattern]) => pattern.test(url));
+      return Promise.resolve(new Response(JSON.stringify(match?.[1] ?? { count: 0 })));
     }),
   );
 }

@@ -79,9 +79,9 @@ export function StrategyEditor() {
   }
 
   return (
-    <main className="app">
-      <header>
-        <h1>New strategy</h1>
+    <main className="page">
+      <header className="page-header">
+        <h2>New strategy</h2>
       </header>
 
       <form className="auth-form" onSubmit={(event) => void handleSubmit(event)}>
