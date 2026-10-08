@@ -833,14 +833,24 @@ class TestTopicCreation:
 
         assert set(created) == set(Topics(config.kafka_topic_prefix).all)
 
-        admin = AIOKafkaAdminClient(bootstrap_servers=kafka)
-        await admin.start()
-        try:
-            described = await admin.describe_topics([Topics(config.kafka_topic_prefix).trades])
-        finally:
-            await admin.close()
+        # A just-created topic can be listed before its partitions are: `describe_topics`
+        # briefly answers with an empty partition list on a busy local broker (observed
+        # during Phase 10's full-suite run). Same rule as `_wait_until_topics_visible`:
+        # wait for the real condition, bounded, never a guessed sleep.
+        trades = Topics(config.kafka_topic_prefix).trades
+        partitions: list[object] = []
+        deadline = asyncio.get_running_loop().time() + 30
+        while not partitions and asyncio.get_running_loop().time() < deadline:
+            admin = AIOKafkaAdminClient(bootstrap_servers=kafka)
+            await admin.start()
+            try:
+                partitions = (await admin.describe_topics([trades]))[0]["partitions"]
+            finally:
+                await admin.close()
+            if not partitions:
+                await asyncio.sleep(0.5)
 
-        assert len(described[0]["partitions"]) == 3
+        assert len(partitions) == 3
 
     async def test_calling_it_again_creates_nothing(
         self, kafka_config: Callable[..., KafkaSettings], kafka: str
