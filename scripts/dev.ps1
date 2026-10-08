@@ -43,6 +43,14 @@ try { uv run alembic upgrade head; if ($LASTEXITCODE -ne 0) { throw 'migrations 
 finally { Pop-Location }
 
 function Start-Worker([string]$Name) {
+    # Start-Process truncates its redirect targets, so a restart used to erase the log of the
+    # crash that caused it. Keep the previous run's log beside the new one.
+    foreach ($suffix in 'log', 'err.log') {
+        $current = Join-Path $logs "$Name.$suffix"
+        if ((Test-Path $current) -and (Get-Item $current).Length -gt 0) {
+            Move-Item -Force $current (Join-Path $logs ($Name + '.' + $suffix.Replace('log', 'prev.log')))
+        }
+    }
     $process = Start-Process -FilePath uv -ArgumentList 'run', "tradewatch-$Name" `
         -WorkingDirectory $backend -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $logs "$Name.log") `

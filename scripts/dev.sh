@@ -39,7 +39,8 @@ echo "==> Applying migrations"
 export TW_API_RELOAD=false
 
 start_worker() {
-  (cd "$repo_root/backend" && exec uv run "tradewatch-$1" >"$logs/$1.log" 2>&1) &
+  # Append, so a restart never erases the log of the crash that caused it.
+  (cd "$repo_root/backend" && exec uv run "tradewatch-$1" >>"$logs/$1.log" 2>&1) &
   pids[$1]=$!
 }
 
