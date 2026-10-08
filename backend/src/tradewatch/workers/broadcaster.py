@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import signal
 import sys
 
@@ -86,7 +87,11 @@ async def run_broadcaster(
         subscribe_to=(*topics.market, topics.alerts),
     )
     service = MarketBroadcastService(
-        consumer, broadcaster=cache, cache=cache, alerts_channel=ALERT_BROADCAST_CHANNEL
+        consumer,
+        broadcaster=cache,
+        cache=cache,
+        alerts_channel=ALERT_BROADCAST_CHANNEL,
+        max_staleness=dt.timedelta(seconds=settings.kafka.broadcast_max_staleness_seconds),
     )
 
     await consumer.start()

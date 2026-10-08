@@ -317,6 +317,12 @@ class KafkaSettings(_Group):
     #: topics, for the same reason the aggregator is a second one: its own offsets mean a
     #: broadcaster restart or lag never affects persistence or aggregation, and vice versa.
     kafka_broadcast_group: str = "broadcaster"
+    #: Events older than this (by `ingested_at`) are not relayed as live: the broadcaster
+    #: skips its whole backlog to the newest offset instead. Long enough that a supervisor
+    #: restart (seconds) still replays what it missed; short enough that hours of history
+    #: are never pushed to browsers as if it were happening now (found in Phase 10: a
+    #: 2-million-message backlog replayed after downtime).
+    broadcast_max_staleness_seconds: float = Field(default=30.0, gt=0)
     #: The Paper Trading Engine's group (Phase 7). A fourth independent reader of
     #: `tw.market.bars.1m.v1`, again for its own offsets — a paper-trading restart or lag
     #: must not affect persistence, aggregation, or broadcasting, and vice versa.

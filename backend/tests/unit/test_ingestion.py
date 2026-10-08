@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import time
 from collections.abc import AsyncIterator, Sequence
 from decimal import Decimal
 
@@ -791,3 +792,32 @@ async def _take[T](stream: AsyncIterator[T], count: int) -> AsyncIterator[T]:
         taken += 1
         if taken >= count:
             return
+
+
+class TestSyntheticTradeIdentity:
+    """Phase 10 found every trade after the first producer run discarded as a duplicate."""
+
+    async def test_a_reconnect_within_one_run_replays_identical_ids(self) -> None:
+        provider = SyntheticProvider(["AAPL"], run_id="run-a")
+        first = [e.event_id async for e in _take(provider.stream_trades(["AAPL"]), 5)]
+
+        provider.reset()
+        replayed = [e.event_id async for e in _take(provider.stream_trades(["AAPL"]), 5)]
+
+        assert replayed == first  # a replay deduplicates instead of looking like new prints
+
+    async def test_a_new_run_never_reuses_a_previous_runs_trade_ids(self) -> None:
+        earlier = SyntheticProvider(["AAPL"], run_id="run-a")
+        later = SyntheticProvider(["AAPL"], run_id="run-b")
+
+        before = {e.event_id async for e in _take(earlier.stream_trades(["AAPL"]), 50)}
+        after = {e.event_id async for e in _take(later.stream_trades(["AAPL"]), 50)}
+
+        assert before.isdisjoint(after)
+
+    def test_two_providers_built_at_different_moments_get_different_runs(self) -> None:
+        first = SyntheticProvider(["AAPL"])
+        time.sleep(0.002)
+        second = SyntheticProvider(["AAPL"])
+
+        assert first._run_id != second._run_id

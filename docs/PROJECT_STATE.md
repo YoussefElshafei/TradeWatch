@@ -1043,6 +1043,20 @@ crashed worker's log on restart; Grafana's port clashing with other local dev se
 
 ### Phase 11 — End-to-end and failure-recovery hardening ← **next**
 
+**Flaky tests to audit** (the two known backend ones were fixed in Phase 10; these remain):
+
+- **Frontend: intermittent short runs.** Twice on 2026-10-08 `npx vitest run` reported
+  *13 of 15* test files (71 of 89 tests) and still exited successfully; six later runs,
+  including four with `--reporter=json` recording which files ran, always had all 15. Not
+  reproduced, so not explained. A run that silently skips files is worse than one that
+  fails, so the audit should make the expected file count an assertion (e.g. compare the
+  JSON reporter's `testResults` length against the files on disk) before anything else.
+- **Frontend: 5 s timeouts under load.** With the stack running or full parallelism, a
+  few component tests (`StrategyEditor`, `MarketView`, `BacktestResults`) exceed the
+  default 5 s timeout — one of four runs on 2026-10-08. `--maxWorkers=2` makes it rare,
+  not absent. Either the tests wait on something real that is slow under contention, or
+  the timeout is too tight; the audit should find out which before raising it.
+
 Playwright E2E; a failure-injection harness; **a test for each of F1–F20**; a chaos runbook;
 a load test with the shedding order proven.
 
@@ -1092,9 +1106,13 @@ job) before trusting a result, not just whether the endpoint returns one.
   goes stale while the live Market page does not.
 - **The broadcaster resumes from its committed offset**, so after downtime it relays a backlog
   as if it were live. For a live relay, starting from the newest offset is probably right.
-- **A broker outage leaves a gap in the tape**: the producer stalls on the broker (one failed
+- **Accepted limitation — a broker outage leaves a permanent gap in the tape** (decided after
+  Phase 10; not to be fixed). The producer stalls on the broker (one failed
   publish in a 60 s outage, not thousands), the synthetic feed generates nothing meanwhile,
   and nothing catches up — ~3,550 trades' worth of tape is simply absent (`PERFORMANCE.md`).
+  Everything the broker acknowledged survives (F5 holds); what is lost is what was never
+  generated while the producer waited. Failure F4 in `ARCHITECTURE.md` carries the same note.
+  A real provider adapter decides for itself whether to buffer at the source.
 - **The Alpaca adapter has never run against the live API.** No credentials here. See §16.
 - **One aggregator instance.** Per-symbol state lives in its memory, so a second instance
   needs that state to survive a partition reassignment — the point at which the

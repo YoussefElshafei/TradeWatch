@@ -12,11 +12,22 @@ Redis live in `tests/integration/test_redis_cache.py`.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 from collections.abc import AsyncIterator, Sequence
+from decimal import Decimal
 
 import pytest
 
-from tests.kafka_support import alert, bar, quote, trade
+from tests.kafka_support import (
+    MOMENT,
+    FakeConsumerClient,
+    alert,
+    bar,
+    factory,
+    kafka_settings,
+    quote,
+    trade,
+)
 from tradewatch.application.broadcasting import (
     ALERT_BROADCAST_CHANNEL,
     BROADCAST_CHANNEL,
@@ -26,6 +37,7 @@ from tradewatch.application.broadcasting import (
 )
 from tradewatch.domain.enums import BarInterval
 from tradewatch.domain.events import MarketEvent
+from tradewatch.infrastructure.events.kafka import KafkaEventConsumer
 
 pytestmark = pytest.mark.unit
 
@@ -220,3 +232,66 @@ class TestCommitOrdering:
         assert stats.events == 2
         assert stats.published == 2
         assert stats.invalidations == 2
+
+
+class SeekableConsumer(ScriptedConsumer):
+    """A `SkipsToLatest` consumer: records the seek, then serves what is left of the script."""
+
+    def __init__(self, script: Sequence[Sequence[MarketEvent]]) -> None:
+        super().__init__(script)
+        self.seeks = 0
+
+    async def skip_to_latest(self) -> None:
+        self.seeks += 1
+
+
+class TestStaleBacklog:
+    """Phase 10 found a 2-million-message backlog relayed to browsers as live after downtime."""
+
+    LIMIT = dt.timedelta(seconds=30)
+
+    def _service(
+        self, consumer: ScriptedConsumer, *, now: dt.datetime
+    ) -> tuple[MarketBroadcastService, RecordingBroadcaster]:
+        broadcaster = RecordingBroadcaster()
+        service = MarketBroadcastService(
+            consumer, broadcaster, RecordingCache(), clock=lambda: now, max_staleness=self.LIMIT
+        )
+        return service, broadcaster
+
+    async def test_a_fresh_batch_is_relayed(self) -> None:
+        consumer = SeekableConsumer([[trade()]])
+        service, broadcaster = self._service(consumer, now=MOMENT + dt.timedelta(seconds=2))
+
+        await service.run(max_batches=1)
+
+        assert len(broadcaster.published) == 1
+        assert consumer.seeks == 0
+
+    async def test_a_stale_backlog_is_skipped_to_latest_and_live_relaying_resumes(self) -> None:
+        later = MOMENT + dt.timedelta(hours=2)
+        stale = [trade(trade_id="old-1"), trade(trade_id="old-2")]
+        fresh = [factory(later).trade(
+            symbol="AAPL", price=Decimal(101), size=Decimal(1), occurred_at=later,
+            provider_trade_id="new-1",
+        )]  # fmt: skip
+        consumer = SeekableConsumer([stale, fresh])
+        service, broadcaster = self._service(consumer, now=later + dt.timedelta(seconds=1))
+
+        await service.run(max_batches=1)
+
+        assert consumer.seeks == 1
+        assert [message["event_id"] for _, message in broadcaster.published] == [
+            str(fresh[0].event_id)
+        ]
+        assert service.stats.stale_skipped == 2
+        assert consumer.commits[0] == 2  # the skip itself is acknowledged
+
+    async def test_the_kafka_adapter_seeks_its_client_to_the_log_end(self) -> None:
+        client = FakeConsumerClient([])
+        consumer = KafkaEventConsumer(kafka_settings(), client=client)
+        await consumer.start()
+
+        await consumer.skip_to_latest()
+
+        assert client.seeks == 1

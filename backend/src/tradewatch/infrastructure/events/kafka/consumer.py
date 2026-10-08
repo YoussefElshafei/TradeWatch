@@ -82,6 +82,8 @@ class ConsumerClient(Protocol):
 
     async def commit(self) -> None: ...
 
+    async def seek_to_end(self) -> None: ...
+
 
 @dataclass(slots=True)
 class KafkaConsumerStats:
@@ -353,6 +355,11 @@ class KafkaEventConsumer:
         return StreamPosition(
             stream=f"{topic}/{index}", offset=int(getattr(message, "offset", 0) or 0)
         )
+
+    async def skip_to_latest(self) -> None:
+        """Jump every assigned partition to its log end (see `SkipsToLatest`)."""
+        await self._require_client().seek_to_end()
+        log.warning("kafka.skipped_to_latest", group_id=self._group_id)
 
     async def commit(self) -> None:
         """Commit the offsets of everything consumed so far.

@@ -54,20 +54,26 @@ right and is not.
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from tradewatch import __version__
 from tradewatch.application.ports.bar_store import BarStore
 from tradewatch.domain.entities import Bar, NewBar
 from tradewatch.domain.enums import BarInterval
-from tradewatch.domain.events import TradeEvent
+from tradewatch.domain.events import BarEvent, EventType, TradeEvent, deterministic_event_id
+from tradewatch.domain.ids import new_id
 from tradewatch.observability.logging import get_logger
 
 __all__ = ["AggregatorStats", "BarAggregator", "OpenBar", "floor_to_interval"]
 
 log = get_logger(__name__)
+
+#: The `producer` field of every bar this process publishes.
+_PRODUCER = f"bar-aggregator@{__version__}"
 
 #: The interval built from trades. Everything coarser is rolled up from it (§3.3).
 BASE_INTERVAL = BarInterval.ONE_MINUTE
@@ -157,6 +163,11 @@ class OpenBar:
     closed: bool = False
     #: Set when a correction lands, so a flush knows this bar needs rewriting.
     dirty: bool = True
+    #: Carried from the most recent trade so the published bar is a derived event in the
+    #: §7.1 sense: same source, same correlation id as the prints it was built from. A bar
+    #: restored from the database has neither until a trade lands in it.
+    source: str = "aggregator"
+    correlation_id: uuid.UUID | None = None
 
     @property
     def bar_end(self) -> dt.datetime:
@@ -186,6 +197,8 @@ class OpenBar:
             trade_count=1,
             first_at=trade.occurred_at,
             last_at=trade.occurred_at,
+            source=trade.source,
+            correlation_id=trade.correlation_id,
         )
 
     @classmethod
@@ -254,6 +267,42 @@ class OpenBar:
         self.notional += trade.price * trade.size
         self.trade_count += 1
         self.dirty = True
+        self.source = trade.source
+        self.correlation_id = trade.correlation_id
+
+    def to_event(self, *, producer: str, now: dt.datetime) -> BarEvent:
+        """The `market.bar.closed` (or `.corrected`) event for this bar, as published.
+
+        Same natural key as a provider-published bar (ADR-0012): a redelivered or re-flushed
+        bar derives the same event id, so every consumer's idempotency covers it.
+        """
+        key = BarEvent.natural_key(
+            source=self.source,
+            symbol=self.symbol,
+            interval=self.interval,
+            bar_start=self.bar_start,
+            revision=self.revision,
+        )
+        return BarEvent(
+            event_id=deterministic_event_id(*key),
+            event_type=EventType.BAR_CORRECTED if self.revision else EventType.BAR_CLOSED,
+            symbol=self.symbol,
+            interval=self.interval,
+            bar_start=self.bar_start,
+            occurred_at=self.bar_end,
+            ingested_at=now,
+            open=self.open,
+            high=self.high,
+            low=self.low,
+            close=self.close,
+            volume=self.volume,
+            vwap=self.vwap,
+            trade_count=self.trade_count,
+            revision=self.revision,
+            source=self.source,
+            producer=producer,
+            correlation_id=self.correlation_id or new_id(),
+        )
 
     def to_new_bar(self) -> NewBar:
         """The row to write. Validates the OHLC invariants before the database has to."""
@@ -292,6 +341,7 @@ class BarAggregator:
         self._store = store
         self._interval = interval
         self._lateness = lateness
+        self._closed_events: list[BarEvent] = []
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
         #: (symbol, bar_start) -> bar. Holds open bars and closed-but-still-revisable ones;
         #: a bar leaves when the watermark passes bar_end + lateness.
@@ -565,6 +615,13 @@ class BarAggregator:
         else:
             written = await self._store.save_bars(rows)
 
+        # Closed bars become events only once they are durable, so nothing downstream
+        # ever acts on a bar the database does not have. Collected here, published by the
+        # caller (`take_closed_events`): this class owns bars, not a broker connection.
+        now = self._clock()
+        self._closed_events.extend(
+            bar.to_event(producer=_PRODUCER, now=now) for bar in dirty if bar.closed
+        )
         for bar in dirty:
             bar.dirty = False
 
@@ -580,6 +637,11 @@ class BarAggregator:
             tracked=len(self._bars),
         )
         return written
+
+    def take_closed_events(self) -> list[BarEvent]:
+        """Bars that closed (or were corrected after closing) in flushes since the last call."""
+        events, self._closed_events = self._closed_events, []
+        return events
 
     def discard_pending(self) -> int:
         """Throw away bars with unsaved changes. Returns how many were dropped.

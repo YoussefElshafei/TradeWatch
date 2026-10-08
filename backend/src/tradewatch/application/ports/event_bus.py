@@ -95,6 +95,20 @@ class EventConsumer(Protocol):
 
 
 @runtime_checkable
+class SkipsToLatest(Protocol):
+    """A consumer that can abandon its backlog and continue from the newest events.
+
+    Only for a consumer whose job is *live* fan-out. A consumer that owes completeness —
+    persistence, aggregation, paper trading, detection — must never do this: skipping is
+    exactly the data loss their at-least-once contract exists to prevent.
+    """
+
+    async def skip_to_latest(self) -> None:
+        """Move every assigned partition to its log end. Commit separately."""
+        ...
+
+
+@runtime_checkable
 class EventBatchConsumer(Protocol):
     """A source of events that acknowledges in batches.
 
