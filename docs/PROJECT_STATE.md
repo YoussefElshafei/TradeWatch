@@ -525,14 +525,23 @@ docker compose -f docker/docker-compose.yml up -d     # PostgreSQL + Redis + Kaf
 cd backend && uv run alembic upgrade head
 ```
 
-### Four terminals
+### One command
 
 ```bash
-cd backend  && uv run tradewatch-producer  # provider → Kafka
-cd backend  && uv run tradewatch-consumer  # Kafka → PostgreSQL
-cd backend  && uv run tradewatch-api       # http://127.0.0.1:8010  (docs at /docs)
-cd frontend && npm run dev                 # http://127.0.0.1:5173
+powershell -File scripts/dev.ps1        # Windows
+./scripts/dev.sh                        # macOS / Linux / Git Bash
 ```
+
+Starts Docker infrastructure, applies migrations, then runs the API, all eight workers and
+the frontend, restarting any process that exits until Ctrl+C. That restart loop is the point:
+every Kafka worker deliberately exits when the broker evicts it (a laptop sleeping is enough),
+and before this script nothing brought them back — a backtest then sat on "Waiting to start…"
+forever. Logs land in `backend/.run-logs/`. Each process still runs alone with
+`cd backend && uv run tradewatch-<name>`.
+
+Open `http://localhost:5173`, not `127.0.0.1:5173`: the API is `localhost:8010`, and the
+refresh cookie is `SameSite=Lax`, so from `127.0.0.1` the browser treats it as cross-site and a
+page reload signs you out.
 
 The API's default port is **8010**, not the conventional 8000 — changed 2026-09-27 after a
 stale dev-server process from an earlier session was found permanently squatting on host port
@@ -551,6 +560,11 @@ a different port for your own machine.
 | `tradewatch-aggregator` | Kafka → 1m bars → 5m/1h/1d rollups. Its own consumer group |
 | `tradewatch-backfill` | One-shot history fetch. Idempotent and resumable |
 | `tradewatch-api` | The FastAPI gateway |
+| `tradewatch-broadcaster` | Kafka → Redis Pub/Sub → `/ws/market` (Phase 4) |
+| `tradewatch-backtest-runner` | Polls `backtest_runs` with `FOR UPDATE SKIP LOCKED`; retries a dropped database connection with backoff instead of exiting (Phase 6) |
+| `tradewatch-paper-trading` | Runs deployed strategies against live 1m bars (Phase 7) |
+| `tradewatch-anomaly-detector` | Scores bars, writes detections, publishes `tw.anomalies.v1` (Phase 8) |
+| `tradewatch-alert-dispatcher` | Matches anomalies and fills against alert rules → `/ws/alerts` (Phase 9) |
 | `tradewatch-ingest` | Ingestion alone, to a bus nothing drains. For watching normalization |
 | `tradewatch-pipeline` | The Phase 1 single process, in-memory bus. For development with no broker |
 
@@ -623,15 +637,19 @@ response carries `X-Request-ID`.
 
 ## 13. The frontend
 
-No longer one view. Routes, all but `/login`/`/register` behind `ProtectedRoute`
-(`App.tsx`):
+Routes, all but `/login`/`/register` behind `ProtectedRoute` and rendered inside `AppShell`
+(`App.tsx`) — a fixed sidebar (Dashboard, Market, Strategies, Backtests, Portfolios, Alerts,
+Anomalies), the signed-in email and Sign out at its foot, and a footer stating the
+simulation-only scope:
 
 | Route | Component | What it does |
 | --- | --- | --- |
-| `/` | `Dashboard` | The original symbol selector, price chart, latest price — still the landing page |
+| `/` | `Dashboard` | Overview cards: watchlist with last prices, portfolios, recent alerts, recent anomalies, recent backtests — each linking to its page |
+| `/market` | `MarketView` | The original symbol selector, latest-price panel, price chart and live trade tape (it was the landing page until the design pass) |
 | `/login`, `/register` | `LoginPage`, `RegisterPage` | Phase 5 auth flow |
-| `/strategies`, `/strategies/new` | `StrategiesPage`, `StrategyEditor` | Owner-scoped strategy CRUD (Phase 6) |
-| `/backtests/new`, `/backtests/:id` | `BacktestForm`, `BacktestResults` | Run and read a backtest against the shared Execution Simulator |
+| `/strategies`, `/strategies/new` | `StrategiesPage`, `StrategyEditor` | Owner-scoped strategy CRUD (Phase 6). Archiving frees the name — the uniqueness index is partial over `NOT is_archived` |
+| `/backtests` | `BacktestsPage` | Every run, newest first, with status (added by the design pass) |
+| `/backtests/new`, `/backtests/:id` | `BacktestForm`, `BacktestResults` | Run and read a backtest against the shared Execution Simulator: metrics, equity curve, trade list |
 | `/portfolios`, `/portfolios/:id` | `PortfoliosPage`, `PortfolioDetailPage` | Owner-scoped portfolios and deployments (Phase 7) |
 | `/anomalies` | `AnomalyFeed` | The feed, a symbol filter that doubles as score history, and a per-detection explanation panel over `GET /api/v1/anomalies` (Phase 8 — this page was the one deliverable Phase 8 shipped without; closed in this pass) |
 | `/alerts` | `AlertCenter` | Alert-rule builder, rule list, and a live-updating feed over `/ws/alerts` (Phase 9) |
@@ -651,14 +669,21 @@ Charting is Recharts (ADR-0013), chosen because SVG output can be asserted again
 A canvas chart renders nothing a test can see, so the end-to-end claim would be unverifiable.
 The anomaly feed's "score history" is a filtered, newest-first table rather than a second
 chart — the feed already reads as a timeline once narrowed to one symbol, and a charting
-dependency this phase does not need was left for the design pass rather than added here.
+dependency Phase 8 did not need was not added for it.
+
+**Visual design.** One design pass (commit `44f2f21`, 2026-10-07) replaced the plain markup
+with a dark, terminal-style theme. Every colour, space, radius and font is a custom property
+in `styles/tokens.css` (`--color-accent`, `--color-border`, …); `App.css` uses only those.
+Charts take their stroke colours from the same tokens — and must use the *current* names: the
+pass renamed `--accent`/`--grid`, the two Recharts components kept the old ones, and both chart
+lines rendered invisibly (an undefined `var()` is `stroke: none`) until 2026-10-08.
 
 **Known gaps:** API types are hand-written rather than generated from the committed OpenAPI
 schema (§8.3 wants generation, and it needs a codegen step). The price chart has fixed pixel
 dimensions so it is testable in jsdom; responsive rendering needs a `ResizeObserver` polyfill.
-Every page here is **functional, not designed** — plain, unstyled markup matching the rest of
-the app, on purpose: a visual design pass is the next piece of work, not part of any phase
-above.
+The hand-written types are also how `/backtests/:id` went blank: the frontend read
+`points` where the API sends `equity_curve`, and the component test stubbed the frontend's own
+name, so it passed. Fixed 2026-10-08; generated types are the real cure.
 
 ---
 
@@ -1203,10 +1228,6 @@ no dependency on anything else unbuilt (§17's Phase 11 wants a failure-injectio
 else). Concretely: Prometheus metrics across every service, correlation-id propagation from
 HTTP through Kafka, a committed Grafana dashboard, and real benchmarks in `benchmarks/` —
 currently empty, meaning no performance number has ever been quotable about this system.
-
-A visual design pass on the frontend is also overdue and explicitly not part of any numbered
-phase (§13) — every page through `/anomalies` and `/alerts` is functional, plain, and
-deliberately unstyled. Worth doing whenever it is, but it does not block Phase 10.
 
 The one thing worth closing opportunistically rather than waiting for Phase 11: the flaky
 `test_a_connection_closes_itself_the_instant_its_token_expires` test (§17's Phase 11 entry has
