@@ -47,3 +47,4 @@ data/
 *.pkl
 playwright-report/
 test-results/
+graphify-out/
