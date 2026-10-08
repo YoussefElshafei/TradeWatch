@@ -913,7 +913,7 @@ class TestStrategyAndPortfolio:
 
         await expect_violation(
             session,
-            "uq_strategies_user_id_name",
+            "uq_strategies_user_id_name_active",
             Strategy(
                 id=new_id(),
                 user_id=user.id,

@@ -97,7 +97,7 @@ describe('App', () => {
     renderApp();
 
     expect(await screen.findByRole('contentinfo')).toHaveTextContent(
-      /Phase 5.*accounts.*sessions/i,
+      /Simulated trading only/i,
     );
   });
 });

@@ -112,8 +112,8 @@ export function AppShell() {
 
         <footer className="shell-footer">
           <p>
-            Phase 5 — accounts, sessions, and per-user access control sit in front of the
-            Phase 1–4 pipeline. API at <code>{config.apiBaseUrl}</code>.
+            Simulated trading only — no brokerage, no real money. API at{' '}
+            <code>{config.apiBaseUrl}</code>.
           </p>
         </footer>
       </div>

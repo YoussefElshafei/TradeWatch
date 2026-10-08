@@ -89,8 +89,15 @@ class Strategy(UUIDPrimaryKey, TimestampedMixin, Base):
 
     __table_args__ = (
         # Scoped to the user, not global: two people may both have a strategy called
-        # "SMA crossover" and neither should have to care.
-        UniqueConstraint("user_id", "name", name="uq_strategies_user_id_name"),
+        # "SMA crossover" and neither should have to care. Partial, so an archived strategy
+        # frees its name: archiving is how a user deletes one, and they cannot see it after.
+        Index(
+            "uq_strategies_user_id_name_active",
+            "user_id",
+            "name",
+            unique=True,
+            postgresql_where=text("NOT is_archived"),
+        ),
         CheckConstraint("cardinality(symbols) > 0", name="symbols_not_empty"),
         Index("ix_strategies_user_id", "user_id"),
     )

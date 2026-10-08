@@ -83,6 +83,22 @@ class TestCreateStrategy:
         second = await api.post("/api/v1/strategies", json=payload, headers=headers)
         assert second.status_code == 409
 
+    async def test_an_archived_strategy_frees_its_name(
+        self, api: httpx.AsyncClient, user: User, auth_headers_for: AuthHeadersFor
+    ) -> None:
+        payload = {
+            "name": "Reused",
+            "strategy_type": "sma_crossover",
+            "parameters": {"fast_period": 5, "slow_period": 20},
+            "symbols": ["AAPL"],
+        }
+        headers = auth_headers_for(user)
+        first = await api.post("/api/v1/strategies", json=payload, headers=headers)
+        archived = await api.delete(f"/api/v1/strategies/{first.json()['id']}", headers=headers)
+        assert archived.status_code == 204
+        again = await api.post("/api/v1/strategies", json=payload, headers=headers)
+        assert again.status_code == 201
+
     async def test_requires_authentication(self, api: httpx.AsyncClient) -> None:
         response = await api.post(
             "/api/v1/strategies",
