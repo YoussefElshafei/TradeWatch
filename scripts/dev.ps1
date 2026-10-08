@@ -51,6 +51,12 @@ function Start-Worker([string]$Name) {
     $process
 }
 
+# No auto-reload for the API here, like every other process. On Windows uvicorn's reloader
+# stops the old server with a console Ctrl+C event that never reaches a process started in
+# its own hidden window, so the first edit hung the API mid-reload. After changing backend
+# code, stop the one process (or this script) and it comes back on the new code.
+$env:TW_API_RELOAD = 'false'
+
 $running = @{}
 foreach ($name in $workers) { $running[$name] = Start-Worker $name }
 

@@ -34,6 +34,10 @@ docker compose -f "$repo_root/docker/docker-compose.yml" up -d --wait || {
 echo "==> Applying migrations"
 (cd "$repo_root/backend" && uv run alembic upgrade head) || exit 1
 
+# No auto-reload for the API here, matching dev.ps1: the supervisor restarts processes, and
+# a reload that never completes is worse than an explicit restart after an edit.
+export TW_API_RELOAD=false
+
 start_worker() {
   (cd "$repo_root/backend" && exec uv run "tradewatch-$1" >"$logs/$1.log" 2>&1) &
   pids[$1]=$!

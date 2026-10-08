@@ -39,7 +39,11 @@ def main() -> int:
         factory=True,
         host=settings.api.api_host,
         port=settings.api.api_port,
-        reload=settings.app.env is Environment.LOCAL,
+        reload=(
+            settings.api.api_reload
+            if settings.api.api_reload is not None
+            else settings.app.env is Environment.LOCAL
+        ),
         log_config=None,  # structlog owns logging
     )
     return 0
