@@ -284,11 +284,11 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
             "timeline": timeline,
         },
         caveats=[
-            "The producer does not buffer while the broker is down. Low peak lag means little "
-            "reached the broker to drain, not that nothing was lost: compare the trade rate "
-            "after the restart with the rate before. A buffering producer would show a "
-            "catch-up burst; `trades_never_published_estimate` is the pre-outage rate times "
-            "the outage length, an estimate, not a count.",
+            "Low peak lag means little reached the broker to drain, not that nothing is "
+            "missing: compare the trade rate after the restart with the rate before. A feed "
+            "that caught up would show a burst; `trades_never_published_estimate` is the "
+            "pre-outage rate times the outage length, an estimate of the gap, not a count of "
+            "failed publishes (the producer's own log has those).",
             "A clean `docker stop`/`start` of one broker. A network partition, a crashed "
             "broker with log recovery, or a multi-broker failover would behave differently.",
             "Includes the supervisor's restart delay for any worker that exited on eviction.",

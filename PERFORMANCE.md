@@ -120,12 +120,16 @@ daily (the runner reads only `1d` bars).
 | Peak lag after restart | 103 messages (broadcaster); ≤ 62 for every other group |
 | Workers that exited during the outage | none |
 | Trades acknowledged by the broker, before / after | 59.2 / 42.5 per second |
-| Trades never published (estimate: pre-outage rate × 60 s) | **≈ 3,550** |
+| Trades missing from the tape (estimate: pre-outage rate × 60 s) | **≈ 3,550** |
+| Trade publishes that failed, per the producer's log | 1 (plus 1 quote shed, 4 retries) |
 
-**What this actually shows:** there was almost nothing to drain, because the producer does
-not buffer while the broker is down — events generated during the outage are dropped, not
-delayed. The after-restart rate is *lower* than before, so there was no catch-up burst.
-"Fast recovery" here means "fast to resume", not "nothing lost".
+**What this actually shows:** there was almost nothing to drain. The producer did not drop
+thousands of events — its log shows one failed trade publish — it *stalled* on the broker,
+and the synthetic feed generated nothing while it waited. The after-restart rate is lower
+than before, so nothing caught up either: the tape has a gap the length of the outage.
+Everything the broker acknowledged survived, which is what Phase 2's outage test asserts.
+"Fast recovery" here means "fast to resume", not "no gap". A real provider's behaviour while
+the producer is stalled (buffer at the source, or drop) was not measured.
 
 **Does not prove:** behaviour under a network partition, a crashed broker with log
 recovery, or a multi-broker failover; the drain rate of a large backlog (the ingest
@@ -158,7 +162,9 @@ investigating; they describe what was observed, and are not performance figures.
    offset, so after downtime browsers receive hours-old ticks presented as live: 2,093,299
    messages behind before the group was reset to latest for these measurements.
    A live relay probably wants to start from the newest offset.
-4. **The producer does not buffer during a broker outage** (recovery benchmark, above).
+4. **A broker outage leaves a gap in the tape.** The producer stalls rather than drops,
+   but the synthetic feed generates nothing while it is stalled and nothing catches up
+   afterwards (recovery benchmark, above).
 
 **Bottlenecks recorded, not optimised:**
 

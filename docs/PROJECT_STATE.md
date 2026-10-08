@@ -1028,8 +1028,9 @@ and their numbers would describe a CI runner, not the system.
 **Found by measuring — see `PERFORMANCE.md` "What the measurements found":** no process
 publishes live 1m bars, so live paper trading and anomaly detection have no input; the
 synthetic provider's trade ids restart every run, so new trades are dropped as duplicates; the
-broadcaster replays its backlog as live after downtime; the producer drops events during a
-broker outage. None was fixed here — Phase 10's brief was measure first.
+broadcaster replays its backlog as live after downtime; a broker outage leaves a gap in the
+tape (the producer stalls, nothing catches up). None was fixed here — Phase 10's brief was
+measure first.
 **Also fixed:** the WebSocket token-expiry test (whole `with` inside `pytest.raises`, three
 seconds of validity); the topic-partition test (polls `describe_topics` until partitions
 appear); `/ready` reporting a running Kafka as `timeout` on Windows (IPv6 `::1` tried first,
@@ -1091,8 +1092,9 @@ job) before trusting a result, not just whether the endpoint returns one.
   goes stale while the live Market page does not.
 - **The broadcaster resumes from its committed offset**, so after downtime it relays a backlog
   as if it were live. For a live relay, starting from the newest offset is probably right.
-- **The producer does not buffer during a broker outage**: ~3,550 trades were never published
-  in a 60 s outage (`PERFORMANCE.md`, recovery benchmark).
+- **A broker outage leaves a gap in the tape**: the producer stalls on the broker (one failed
+  publish in a 60 s outage, not thousands), the synthetic feed generates nothing meanwhile,
+  and nothing catches up — ~3,550 trades' worth of tape is simply absent (`PERFORMANCE.md`).
 - **The Alpaca adapter has never run against the live API.** No credentials here. See §16.
 - **One aggregator instance.** Per-symbol state lives in its memory, so a second instance
   needs that state to survive a partition reassignment — the point at which the
