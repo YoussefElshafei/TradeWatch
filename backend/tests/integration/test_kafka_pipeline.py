@@ -99,6 +99,30 @@ async def _broker_reachable() -> bool:
             await admin.close()
 
 
+async def _wait_until_topics_visible(
+    bootstrap: str, wanted: Sequence[str], timeout_s: float = 30.0
+) -> None:
+    """Poll until `wanted` all appear in `list_topics()`, the same "wait for a real
+    condition, not a guessed delay" rule `TestBrokerOutage._wait_for_broker` and
+    `scripts/wait_for_kafka_metadata.py` follow for this exact broker behaviour."""
+    if not wanted:
+        return
+    remaining = set(wanted)
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while True:
+        admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap, client_id="settle-probe")
+        await admin.start()
+        try:
+            remaining -= set(await admin.list_topics())
+        finally:
+            await admin.close()
+        if not remaining:
+            return
+        if asyncio.get_running_loop().time() > deadline:
+            raise TimeoutError(f"topic metadata never caught up: still missing {remaining}")
+        await asyncio.sleep(0.5)
+
+
 @pytest_asyncio.fixture(scope="session")
 async def kafka() -> AsyncIterator[str]:
     """The bootstrap address, or a skip with an explanation."""
@@ -819,11 +843,23 @@ class TestTopicCreation:
         assert len(described[0]["partitions"]) == 3
 
     async def test_calling_it_again_creates_nothing(
-        self, kafka_config: Callable[..., KafkaSettings]
+        self, kafka_config: Callable[..., KafkaSettings], kafka: str
     ) -> None:
         config = kafka_config()
 
-        await ensure_topics(config)
+        created = await ensure_topics(config)
+
+        # `ensure_topics` decides what is missing from `list_topics()` (admin.py's own
+        # docstring: idempotent, "creates what is missing and leaves what exists alone").
+        # On a freshly-started broker, `list_topics()` can lag a just-created topic by a
+        # second or two — `scripts/wait_for_kafka_metadata.py` measured this directly — and
+        # this test's `prefix` fixture mints a brand-new topic set per test, so the CI
+        # warmup step (which only warms its own, differently-prefixed probe topics) never
+        # touches *this* lag. Production never calls `ensure_topics` twice within
+        # milliseconds, so the fix belongs here, at the one caller that actually does,
+        # rather than teaching the function itself to retry around a path it never
+        # exercises this way.
+        await _wait_until_topics_visible(kafka, created)
 
         assert await ensure_topics(config) == []
 
