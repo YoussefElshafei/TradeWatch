@@ -51,15 +51,18 @@ powershell -File scripts/setup.ps1      # Windows PowerShell (pwsh works too)
 ```
 
 That checks prerequisites, copies `.env.example` to `.env`, and installs both dependency
-sets. Then, in four terminals:
+sets. Then one command starts everything — Docker infrastructure, migrations, the API, all
+eight workers and the frontend — and restarts any process that exits (a Kafka eviction after
+the machine sleeps, for instance) until you press Ctrl+C:
 
 ```bash
-cd backend  && uv run tradewatch-producer   # market data → Kafka (no credentials needed)
-cd backend  && uv run tradewatch-consumer   # Kafka → PostgreSQL
-cd backend  && uv run tradewatch-aggregator # Kafka → 1m bars → 5m/1h/1d rollups
-cd backend  && uv run tradewatch-api        # http://127.0.0.1:8010  (docs at /docs)
-cd frontend && npm run dev                  # http://127.0.0.1:5173 — a chart with real data
+powershell -File scripts/dev.ps1        # Windows
+./scripts/dev.sh                        # macOS / Linux / Git Bash
 ```
+
+Open **http://localhost:5173** (not `127.0.0.1` — the refresh cookie is scoped to the API's
+host, so a reload there signs you out). Logs are in `backend/.run-logs/`. Each process can
+still be run on its own, e.g. `cd backend && uv run tradewatch-consumer`.
 
 For history to backtest against later, run the one-shot backfill once:
 
