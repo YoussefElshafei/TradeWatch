@@ -38,5 +38,6 @@ reasoning, which is the only thing an ADR is for.
 | [0014](ADR-0014-consumer-acknowledgement-and-dead-letter-policy.md) | Consumer acknowledgement boundary and dead-letter policy | Accepted |
 | [0015](ADR-0015-event-time-bar-aggregation.md) | Event-time bar aggregation, with per-symbol sealing | Superseded by ADR-0016 |
 | [0016](ADR-0016-idempotent-bar-aggregation-under-redelivery.md) | Idempotent bar aggregation under redelivery | Accepted |
+| [0017](ADR-0017-observability-metrics-and-measurement.md) | Metrics per process, lag from the broker, numbers only from benchmarks | Accepted |
 
 Template: [TEMPLATE.md](TEMPLATE.md)
