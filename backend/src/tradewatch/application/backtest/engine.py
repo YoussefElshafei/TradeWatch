@@ -85,6 +85,9 @@ class EquityPointResult:
     drawdown_pct: Decimal
 
 
+_METRIC_PLACES = Decimal("0.0001")
+
+
 @dataclass(frozen=True, slots=True)
 class BacktestMetrics:
     """The `backtest_runs.metrics` JSONB payload."""
@@ -99,20 +102,29 @@ class BacktestMetrics:
     exposure_pct: Decimal
 
     def as_json(self) -> dict[str, Any]:
-        """Decimals as strings, same convention as every other money value (ADR-0009)."""
+        """Decimals as strings, same convention as every other money value (ADR-0009).
+
+        Fixed-point, never `str()`: a zero computed through `**` comes back as `0E-27`, and
+        `str` would send that exponent form to a client that only ever trims trailing zeros.
+        Four places, because these are summary statistics: the 28-digit division remainders
+        behind them are noise to a reader, and the trades and equity curve keep full precision.
+        """
+
+        def _fixed(value: Decimal) -> str:
+            return format(value.quantize(_METRIC_PLACES), "f")
 
         def _opt(value: Decimal | None) -> str | None:
-            return None if value is None else str(value)
+            return None if value is None else _fixed(value)
 
         return {
-            "total_return_pct": str(self.total_return_pct),
+            "total_return_pct": _fixed(self.total_return_pct),
             "cagr_pct": _opt(self.cagr_pct),
-            "max_drawdown_pct": str(self.max_drawdown_pct),
+            "max_drawdown_pct": _fixed(self.max_drawdown_pct),
             "sharpe_ratio": _opt(self.sharpe_ratio),
             "volatility_pct": _opt(self.volatility_pct),
             "win_rate_pct": _opt(self.win_rate_pct),
             "trade_count": self.trade_count,
-            "exposure_pct": str(self.exposure_pct),
+            "exposure_pct": _fixed(self.exposure_pct),
         }
 
 

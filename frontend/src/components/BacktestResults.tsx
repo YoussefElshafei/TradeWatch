@@ -80,11 +80,11 @@ function EquityChart({ backtestId }: { backtestId: string }) {
       />
     );
   }
-  if (state.data.points.length === 0) {
+  if (state.data.equity_curve.length === 0) {
     return <Message tone="info" title="No equity points recorded" />;
   }
 
-  const points: EquityChartPoint[] = state.data.points.map((point) => ({
+  const points: EquityChartPoint[] = state.data.equity_curve.map((point) => ({
     label: formatTimestamp(point.as_of, 'date'),
     equity: Number(point.total_equity),
     equityText: point.total_equity,
@@ -103,7 +103,7 @@ function EquityChart({ backtestId }: { backtestId: string }) {
           height={280}
           margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
         >
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--grid)" />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
           <XAxis dataKey="label" minTickGap={48} tick={{ fontSize: 12 }} />
           <YAxis
             domain={[low - padding, high + padding]}
@@ -115,7 +115,7 @@ function EquityChart({ backtestId }: { backtestId: string }) {
           <Line
             type="monotone"
             dataKey="equity"
-            stroke="var(--accent)"
+            stroke="var(--color-accent)"
             strokeWidth={2}
             dot={false}
             isAnimationActive={false}

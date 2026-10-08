@@ -93,7 +93,7 @@ export interface BacktestEquityPoint {
 
 export interface BacktestEquityList {
   count: number;
-  points: BacktestEquityPoint[];
+  equity_curve: BacktestEquityPoint[];
 }
 
 export interface CreateBacktestInput {

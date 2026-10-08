@@ -33,6 +33,7 @@ from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol
 
+from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tradewatch.application.backtest.engine import run_backtest
@@ -194,6 +195,10 @@ async def _run_backtest(session: AsyncSession, run: BacktestRun) -> dict[str, An
     return result.metrics.as_json()
 
 
+_TRANSIENT_DATABASE_ERRORS = (OSError, TimeoutError, OperationalError, InterfaceError)
+_MAX_BACKOFF_SECONDS = 30.0
+
+
 async def run_backtest_worker(
     settings: Settings,
     *,
@@ -208,8 +213,28 @@ async def run_backtest_worker(
         await database.connect()
 
     try:
+        backoff = poll_interval_seconds
         while True:
-            processed = await process_one_backtest(database)
+            try:
+                processed = await process_one_backtest(database)
+            except _TRANSIENT_DATABASE_ERRORS as error:
+                # A poll loop must outlive one dropped connection (a laptop waking from sleep
+                # was enough to kill it for good). The claim rolled back with the session, so
+                # the run is still queued; anything else is a bug and still ends the worker.
+                # ponytail: a run already marked `running` when this hits stays `running`;
+                # add a stale-claim sweep if that is ever seen outside a crash.
+                if once:
+                    raise
+                log.warning(
+                    "backtest_runner.database_unavailable",
+                    error=str(error)[:200],
+                    error_type=type(error).__name__,
+                    retry_in_seconds=backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+                continue
+            backoff = poll_interval_seconds
             if once:
                 return
             if not processed:

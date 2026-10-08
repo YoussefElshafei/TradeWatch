@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 
 from tradewatch.application.backtest import run_backtest
-from tradewatch.application.backtest.engine import BacktestResult
+from tradewatch.application.backtest.engine import BacktestMetrics, BacktestResult
 from tradewatch.application.execution import ExecutionConfig
 from tradewatch.application.strategy import (
     InvalidStrategyParametersError,
@@ -328,3 +328,21 @@ class TestEdgeCases:
                 start=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
                 end=dt.datetime(2026, 1, 2, tzinfo=dt.UTC),
             )
+
+
+def test_metrics_json_never_uses_exponent_notation() -> None:
+    """`str(Decimal("0E-27"))` is "0E-27"; the frontend only trims zeros and showed it raw."""
+    metrics = BacktestMetrics(
+        total_return_pct=Decimal("0E-27"),
+        cagr_pct=Decimal("0E-27"),
+        max_drawdown_pct=Decimal("1E+1"),
+        sharpe_ratio=None,
+        volatility_pct=None,
+        win_rate_pct=None,
+        trade_count=0,
+        exposure_pct=Decimal(0),
+    ).as_json()
+
+    assert not any("E" in value for value in metrics.values() if isinstance(value, str))
+    assert metrics["max_drawdown_pct"] == "10.0000"
+    assert metrics["cagr_pct"] == "0.0000"

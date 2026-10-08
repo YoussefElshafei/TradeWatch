@@ -64,7 +64,7 @@ const TRADES = {
 
 const EQUITY = {
   count: 2,
-  points: [
+  equity_curve: [
     { as_of: '2026-01-01T00:00:00Z', total_equity: '100000.00000000', drawdown_pct: null },
     { as_of: '2026-01-02T00:00:00Z', total_equity: '101000.00000000', drawdown_pct: null },
   ],

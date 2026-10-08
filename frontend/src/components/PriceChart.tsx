@@ -119,7 +119,7 @@ export function PriceChart({ bars, symbol, width = 760, height = 320 }: PriceCha
           height={height}
           margin={{ top: 8, right: 16, bottom: 8, left: 8 }}
         >
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--grid)" />
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
           <XAxis dataKey="label" minTickGap={48} tick={{ fontSize: 12 }} />
           <YAxis
             domain={[low - padding, high + padding]}
@@ -131,7 +131,7 @@ export function PriceChart({ bars, symbol, width = 760, height = 320 }: PriceCha
           <Line
             type="monotone"
             dataKey="close"
-            stroke="var(--accent)"
+            stroke="var(--color-accent)"
             strokeWidth={2}
             dot={false}
             isAnimationActive={false}
