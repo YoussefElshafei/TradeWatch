@@ -470,6 +470,25 @@ exists, the adapters do not.
 **Explicitly deferred:** optimization work that has not been justified by one of these
 measurements.
 
+**Status:** closed, 2026-10-08. Results and findings in [`PERFORMANCE.md`](PERFORMANCE.md);
+decisions in [ADR-0017](ADR/ADR-0017-observability-metrics-and-measurement.md).
+
+| Criterion | Status |
+| --- | --- |
+| Every quoted number traces to a benchmark, with its conditions | **Met.** `PERFORMANCE.md` links each figure to a committed result file carrying the commit, configuration, hardware and raw percentiles; figures read off the running system while investigating are labelled as observations, not results |
+| A benchmark can be re-run from the documented command alone | **Met.** `benchmarks/README.md` gives one command per benchmark and states what must and must not be running; the isolated three build and drop their own database and topics |
+| Bottlenecks recorded, not silently optimised | **Met.** Persistence-consumer throughput and the single API worker are recorded with their numbers; nothing was optimised |
+| Correlation id propagated from HTTP through Kafka | **Met for every Kafka path, verified in real logs; the HTTP hop has no subject.** No HTTP route publishes to Kafka today. The request id is in every API log line; the first route that publishes should take `correlation_id` from it |
+| Grafana dashboard committed | **Met.** `docker/grafana/dashboards/tradewatch.json`, provisioned on port 3300 |
+| `/ready` checks each dependency independently | **Met.** `database`, `redis`, `kafka`, concurrently, each with its own deadline |
+| Nightly performance workflow | **Not built.** The benchmarks need a broker, Docker and a browser, and a CI runner's numbers would describe the runner |
+
+Measuring found four pipeline correctness gaps, recorded in `PERFORMANCE.md` and
+`docs/PROJECT_STATE.md` §18 and deliberately not fixed in this phase: no process publishes
+live 1m bars; synthetic trade ids collide across producer runs; the broadcaster replays its
+backlog as live; a broker outage leaves a gap in the tape. The first two should be fixed
+before Phase 11's end-to-end tests are written against the pipeline.
+
 ---
 
 ## Phase 11 — End-to-End and Failure-Recovery Hardening
