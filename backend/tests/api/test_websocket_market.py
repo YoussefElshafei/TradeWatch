@@ -114,18 +114,23 @@ class TestConnectAndDisconnect:
         socket races the same connection's own receive loop noticing and tearing down
         `ConnectionManager` state, so the only signal every browser actually gets to see is
         exactly the one checked here: the socket stops being usable.
+
+        Three seconds of validity, and `pytest.raises` around the connect as well as the
+        receive: with one second, a loaded machine spent the whole window in the handshake,
+        the close landed inside `websocket_connect`'s `__enter__`, and the disconnect escaped
+        the assertion. Either way the client sees the same thing, so either way passes.
         """
         near_expiry = create_access_token(
             user_id=uuid.uuid4(),
             role=UserRole.TRADER,
             secret=settings.security.jwt_secret.get_secret_value(),
             ttl_minutes=15,
-            now=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=15) + dt.timedelta(seconds=1),
+            now=dt.datetime.now(dt.UTC) - dt.timedelta(minutes=15) + dt.timedelta(seconds=3),
         )
         with (
             TestClient(ws_app) as client,
-            client.websocket_connect(_ws_url(near_expiry)) as ws,
             pytest.raises(WebSocketDisconnect),
+            client.websocket_connect(_ws_url(near_expiry)) as ws,
         ):
             ws.receive_text()
 

@@ -128,6 +128,12 @@ class AppSettings(_Group):
     log_level: str = "INFO"
     log_format: LogFormat = LogFormat.CONSOLE
     metrics_enabled: bool = True
+    #: Each process serves Prometheus metrics on its own port (`observability/metrics.py`
+    #: `DEFAULT_PORTS`). Loopback by default: `/metrics` is not public (§8.1).
+    metrics_host: str = "127.0.0.1"
+    #: Overrides the process's default port. Unset in shared config — it only makes sense
+    #: per process, e.g. when two copies of one worker run on one machine.
+    metrics_port: int | None = Field(default=None, gt=0, lt=65536)
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -527,6 +533,9 @@ class ApiSettings(_Group):
     # no way to identify or kill it (see PROJECT_STATE.md's known issues). Moved off it
     # rather than keep fighting a single machine's port history.
     api_port: int = Field(default=8010, gt=0, lt=65536)
+    #: Uvicorn auto-reload. Unset means "on when TW_ENV=local". `scripts/dev.ps1` turns it off:
+    #: under that supervisor the reload could not complete on Windows (see the script).
+    api_reload: bool | None = None
     api_page_size_default: int = Field(default=100, gt=0)
     api_page_size_max: int = Field(default=1000, gt=0)
     backtest_timeout_seconds: int = Field(default=300, gt=0)

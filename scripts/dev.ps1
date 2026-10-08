@@ -43,6 +43,14 @@ try { uv run alembic upgrade head; if ($LASTEXITCODE -ne 0) { throw 'migrations 
 finally { Pop-Location }
 
 function Start-Worker([string]$Name) {
+    # Start-Process truncates its redirect targets, so a restart used to erase the log of the
+    # crash that caused it. Keep the previous run's log beside the new one.
+    foreach ($suffix in 'log', 'err.log') {
+        $current = Join-Path $logs "$Name.$suffix"
+        if ((Test-Path $current) -and (Get-Item $current).Length -gt 0) {
+            Move-Item -Force $current (Join-Path $logs ($Name + '.' + $suffix.Replace('log', 'prev.log')))
+        }
+    }
     $process = Start-Process -FilePath uv -ArgumentList 'run', "tradewatch-$Name" `
         -WorkingDirectory $backend -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $logs "$Name.log") `
@@ -50,6 +58,12 @@ function Start-Worker([string]$Name) {
     $null = $process.Handle  # without a held handle, ExitCode reads as empty once it exits
     $process
 }
+
+# No auto-reload for the API here, like every other process. On Windows uvicorn's reloader
+# stops the old server with a console Ctrl+C event that never reaches a process started in
+# its own hidden window, so the first edit hung the API mid-reload. After changing backend
+# code, stop the one process (or this script) and it comes back on the new code.
+$env:TW_API_RELOAD = 'false'
 
 $running = @{}
 foreach ($name in $workers) { $running[$name] = Start-Worker $name }

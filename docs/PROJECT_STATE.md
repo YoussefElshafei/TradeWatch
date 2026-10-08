@@ -76,8 +76,8 @@ worth looking at. **Match it.** A correct patch written in a flatter style is a 
 | 7 | Paper trading | **Complete** |
 | 8 | Anomaly detection | **Complete** (frontend gap closed — see §16) |
 | 9 | Alerts and notifications | **Complete** |
-| 10 | Observability and performance measurement | Not started ← **next** |
-| 11 | End-to-end and failure-recovery hardening | Not started |
+| 10 | Observability and performance measurement | **Complete** (findings in `PERFORMANCE.md`) |
+| 11 | End-to-end and failure-recovery hardening | Not started ← **next** |
 | 12 | AWS deployment | Not started |
 
 **What runs today, end to end:**
@@ -117,7 +117,8 @@ explanation panel, and an alert centre all sit behind `ProtectedRoute`, live-upd
 Kafka — the CI workflow now provisions all three for `backend-integration`, §9's "Consumer
 groups"), plus 4 `provider`-marked tests that stay opt-in. 85 frontend tests across 14 files.
 ruff, ruff-format, mypy strict, import-linter (5 contracts), ESLint, Prettier and `tsc` all
-clean. One pre-existing, documented flaky test remains open — see §17's Phase 11 entry.
+clean. The two known flaky tests (the WebSocket token-expiry race and the Kafka topic-partition
+metadata race) were fixed in Phase 10 — see §16.
 
 **The work is committed and pushed.** Every phase through 9 is merged into `main`, most
 recently via a `--no-ff` merge per phase branch (`git log --graph` shows the shape). Commit
@@ -525,14 +526,23 @@ docker compose -f docker/docker-compose.yml up -d     # PostgreSQL + Redis + Kaf
 cd backend && uv run alembic upgrade head
 ```
 
-### Four terminals
+### One command
 
 ```bash
-cd backend  && uv run tradewatch-producer  # provider → Kafka
-cd backend  && uv run tradewatch-consumer  # Kafka → PostgreSQL
-cd backend  && uv run tradewatch-api       # http://127.0.0.1:8010  (docs at /docs)
-cd frontend && npm run dev                 # http://127.0.0.1:5173
+powershell -File scripts/dev.ps1        # Windows
+./scripts/dev.sh                        # macOS / Linux / Git Bash
 ```
+
+Starts Docker infrastructure, applies migrations, then runs the API, all eight workers and
+the frontend, restarting any process that exits until Ctrl+C. That restart loop is the point:
+every Kafka worker deliberately exits when the broker evicts it (a laptop sleeping is enough),
+and before this script nothing brought them back — a backtest then sat on "Waiting to start…"
+forever. Logs land in `backend/.run-logs/`. Each process still runs alone with
+`cd backend && uv run tradewatch-<name>`.
+
+Open `http://localhost:5173`, not `127.0.0.1:5173`: the API is `localhost:8010`, and the
+refresh cookie is `SameSite=Lax`, so from `127.0.0.1` the browser treats it as cross-site and a
+page reload signs you out.
 
 The API's default port is **8010**, not the conventional 8000 — changed 2026-09-27 after a
 stale dev-server process from an earlier session was found permanently squatting on host port
@@ -551,6 +561,11 @@ a different port for your own machine.
 | `tradewatch-aggregator` | Kafka → 1m bars → 5m/1h/1d rollups. Its own consumer group |
 | `tradewatch-backfill` | One-shot history fetch. Idempotent and resumable |
 | `tradewatch-api` | The FastAPI gateway |
+| `tradewatch-broadcaster` | Kafka → Redis Pub/Sub → `/ws/market` (Phase 4) |
+| `tradewatch-backtest-runner` | Polls `backtest_runs` with `FOR UPDATE SKIP LOCKED`; retries a dropped database connection with backoff instead of exiting (Phase 6) |
+| `tradewatch-paper-trading` | Runs deployed strategies against live 1m bars (Phase 7) |
+| `tradewatch-anomaly-detector` | Scores bars, writes detections, publishes `tw.anomalies.v1` (Phase 8) |
+| `tradewatch-alert-dispatcher` | Matches anomalies and fills against alert rules → `/ws/alerts` (Phase 9) |
 | `tradewatch-ingest` | Ingestion alone, to a bus nothing drains. For watching normalization |
 | `tradewatch-pipeline` | The Phase 1 single process, in-memory bus. For development with no broker |
 
@@ -617,21 +632,30 @@ router's own module docstring).
 Errors use one envelope: `{"error": {"code", "message", "details", "request_id"}}`. Every
 response carries `X-Request-ID`.
 
-**Still unbuilt:** `/metrics` (Phase 10).
+**Operational surface (Phase 10):** `GET /ready` reports `database` (critical), `redis` and
+`kafka` (reported, never fatal) by name, each with its own deadline, run concurrently — a hung
+dependency shows as `timeout` instead of hanging the probe. Prometheus metrics are **not** on
+this router: every process, the API included, serves `/metrics` on its own loopback port
+(9310–9318, `observability/metrics.py`), so the endpoint cannot become public by a missing
+auth rule (ADR-0017).
 
 ---
 
 ## 13. The frontend
 
-No longer one view. Routes, all but `/login`/`/register` behind `ProtectedRoute`
-(`App.tsx`):
+Routes, all but `/login`/`/register` behind `ProtectedRoute` and rendered inside `AppShell`
+(`App.tsx`) — a fixed sidebar (Dashboard, Market, Strategies, Backtests, Portfolios, Alerts,
+Anomalies), the signed-in email and Sign out at its foot, and a footer stating the
+simulation-only scope:
 
 | Route | Component | What it does |
 | --- | --- | --- |
-| `/` | `Dashboard` | The original symbol selector, price chart, latest price — still the landing page |
+| `/` | `Dashboard` | Overview cards: watchlist with last prices, portfolios, recent alerts, recent anomalies, recent backtests — each linking to its page |
+| `/market` | `MarketView` | The original symbol selector, latest-price panel, price chart and live trade tape (it was the landing page until the design pass) |
 | `/login`, `/register` | `LoginPage`, `RegisterPage` | Phase 5 auth flow |
-| `/strategies`, `/strategies/new` | `StrategiesPage`, `StrategyEditor` | Owner-scoped strategy CRUD (Phase 6) |
-| `/backtests/new`, `/backtests/:id` | `BacktestForm`, `BacktestResults` | Run and read a backtest against the shared Execution Simulator |
+| `/strategies`, `/strategies/new` | `StrategiesPage`, `StrategyEditor` | Owner-scoped strategy CRUD (Phase 6). Archiving frees the name — the uniqueness index is partial over `NOT is_archived` |
+| `/backtests` | `BacktestsPage` | Every run, newest first, with status (added by the design pass) |
+| `/backtests/new`, `/backtests/:id` | `BacktestForm`, `BacktestResults` | Run and read a backtest against the shared Execution Simulator: metrics, equity curve, trade list |
 | `/portfolios`, `/portfolios/:id` | `PortfoliosPage`, `PortfolioDetailPage` | Owner-scoped portfolios and deployments (Phase 7) |
 | `/anomalies` | `AnomalyFeed` | The feed, a symbol filter that doubles as score history, and a per-detection explanation panel over `GET /api/v1/anomalies` (Phase 8 — this page was the one deliverable Phase 8 shipped without; closed in this pass) |
 | `/alerts` | `AlertCenter` | Alert-rule builder, rule list, and a live-updating feed over `/ws/alerts` (Phase 9) |
@@ -651,14 +675,21 @@ Charting is Recharts (ADR-0013), chosen because SVG output can be asserted again
 A canvas chart renders nothing a test can see, so the end-to-end claim would be unverifiable.
 The anomaly feed's "score history" is a filtered, newest-first table rather than a second
 chart — the feed already reads as a timeline once narrowed to one symbol, and a charting
-dependency this phase does not need was left for the design pass rather than added here.
+dependency Phase 8 did not need was not added for it.
+
+**Visual design.** One design pass (commit `44f2f21`, 2026-10-07) replaced the plain markup
+with a dark, terminal-style theme. Every colour, space, radius and font is a custom property
+in `styles/tokens.css` (`--color-accent`, `--color-border`, …); `App.css` uses only those.
+Charts take their stroke colours from the same tokens — and must use the *current* names: the
+pass renamed `--accent`/`--grid`, the two Recharts components kept the old ones, and both chart
+lines rendered invisibly (an undefined `var()` is `stroke: none`) until 2026-10-08.
 
 **Known gaps:** API types are hand-written rather than generated from the committed OpenAPI
 schema (§8.3 wants generation, and it needs a codegen step). The price chart has fixed pixel
 dimensions so it is testable in jsdom; responsive rendering needs a `ResizeObserver` polyfill.
-Every page here is **functional, not designed** — plain, unstyled markup matching the rest of
-the app, on purpose: a visual design pass is the next piece of work, not part of any phase
-above.
+The hand-written types are also how `/backtests/:id` went blank: the frontend read
+`points` where the API sends `equity_curve`, and the component test stubbed the frontend's own
+name, so it passed. Fixed 2026-10-08; generated types are the real cure.
 
 ---
 
@@ -966,35 +997,54 @@ config; a warm-up step (`scripts/wait_for_kafka_metadata.py`) absorbs a measured
 ~2-second metadata-propagation lag a freshly-started single-node Kafka broker has that a
 long-lived one does not.
 
+### Phase 10 — Observability and performance measurement ✅
+
+**Delivered:** Prometheus metrics in all nine processes, defined in one module
+(`observability/metrics.py`) with bounded labels only — events published and consumed per
+type and group, delivery delay (`ingested_at` → consumed) and per-batch processing time per
+consumer group (measured once, in the shared `KafkaEventConsumer`), provider lag, HTTP
+requests and latency by **route template**, read-through cache hits and misses, open
+WebSocket connections, SQLAlchemy pool state, strategy signals, orders by outcome, anomalies
+by severity, alerts by type, and log lines at warning and above as the error rate.
+Consumer-group lag comes from `kafka-exporter`, outside the consumers, so it stays visible
+while a consumer is down. Prometheus, Grafana (port **3300**) and `kafka-exporter` are in the
+Compose stack; the dashboard is `docker/grafana/dashboards/tradewatch.json`, provisioned as
+Grafana's home page. Correlation ids are bound into the log context by the shared consumer for
+every batch, and each consumer logs a `kafka.consumer_progress` line every 30 s carrying it.
+`/ready` names each dependency. Five benchmarks in `benchmarks/` and `PERFORMANCE.md`
+(ADR-0017 records the decisions).
+**Exit, confirmed:** every scrape target `up` in Prometheus with live values (verified by
+querying it, not by reading code); metrics tests read `/metrics` back over HTTP through the
+reference parser; one correlation id traced in real logs from a published bar through paper
+trading and the anomaly detector, into a derived anomaly event, through the alert dispatcher,
+to a stored alert 222 ms later; every figure in `PERFORMANCE.md` links to a committed result
+file with its commit, configuration and hardware.
+**Not done, and why:** *HTTP → Kafka* correlation has no subject yet — no HTTP route publishes
+to Kafka in this codebase (backtests queue through PostgreSQL, deployments are rows the paper
+worker reads). The request id is bound into every API log line; the first route that publishes
+should take its event `correlation_id` from it (`ARCHITECTURE.md` §8.3). A nightly
+performance workflow in CI is also not built: the benchmarks need a broker, Docker and Chrome,
+and their numbers would describe a CI runner, not the system.
+**Found by measuring — see `PERFORMANCE.md` "What the measurements found":** no process
+publishes live 1m bars, so live paper trading and anomaly detection have no input; the
+synthetic provider's trade ids restart every run, so new trades are dropped as duplicates; the
+broadcaster replays its backlog as live after downtime; a broker outage leaves a gap in the
+tape (the producer stalls, nothing catches up). None was fixed here — Phase 10's brief was
+measure first.
+**Also fixed:** the WebSocket token-expiry test (whole `with` inside `pytest.raises`, three
+seconds of validity); the topic-partition test (polls `describe_topics` until partitions
+appear); `/ready` reporting a running Kafka as `timeout` on Windows (IPv6 `::1` tried first,
+~2 s refusal — now Happy Eyeballs); `dev.ps1` hanging the API's auto-reload and truncating a
+crashed worker's log on restart; Grafana's port clashing with other local dev servers.
+
 ---
 
 ## 17. What remains
 
-### Phase 10 — Observability and performance measurement ← **next**
-
-Prometheus metrics across every service; correlation-id propagation from HTTP through Kafka;
-a committed Grafana dashboard; **benchmarks in `benchmarks/`** each recording methodology,
-configuration and hardware; `PERFORMANCE.md`.
-**Exit:** every number ever quoted about TradeWatch traces to a benchmark that another person
-can re-run from the documented command alone.
-
-### Phase 11 — End-to-end and failure-recovery hardening
+### Phase 11 — End-to-end and failure-recovery hardening ← **next**
 
 Playwright E2E; a failure-injection harness; **a test for each of F1–F20**; a chaos runbook;
 a load test with the shedding order proven.
-
-**Known flaky test to close here** — `backend/tests/api/test_websocket_market.py::TestConnectAndDisconnect::test_a_connection_closes_itself_the_instant_its_token_expires`
-(ADR-0010's "closed continuously, not only at connect" behaviour). *Open. Found during Phase 6
-verification, 2026-09-26; deliberately not fixed there — it is pre-existing test code from
-Phase 5, unrelated to Phase 6's changes.* The test mints a token with ~1 second of validity
-left and asserts the close arrives inside `pytest.raises(WebSocketDisconnect)`, which wraps
-only `ws.receive_text()`. When that 1-second window elapses during the connect handshake
-itself instead of after — which happens under load, e.g. running alongside the full ~1,200-test
-suite (§2 has the current count) rather than in isolation — the server closes during `client.websocket_connect(...)`'s own
-`__enter__`, before `pytest.raises` is active, and the `WebSocketDisconnect` escapes uncaught.
-Passes reliably standalone; intermittent in the full run. Fix is widening the connect/assert
-race margin (e.g. wrap the whole `with` block in `pytest.raises`, not just the receive call) or
-giving the token a few seconds of headroom instead of one.
 
 ### Phase 12 — AWS deployment
 
@@ -1032,6 +1082,19 @@ job) before trusting a result, not just whether the endpoint returns one.
 
 **Architectural:**
 
+- **Nothing publishes live 1m bars to Kafka** (found in Phase 10). The producer publishes
+  trades and quotes; the aggregator writes bars to PostgreSQL only; the backfill writes nothing
+  to Kafka. Live paper trading and the anomaly detector therefore receive no input in the
+  running stack. The aggregator publishing its closed 1m bars is the likely fix.
+- **Synthetic trade ids collide across producer runs** (found in Phase 10). `{symbol}-{sequence}`
+  with the sequence restarting at zero means every run after the first re-emits stored ids, and
+  the idempotent insert drops them. The dashboard's watchlist price (from the trades table)
+  goes stale while the live Market page does not.
+- **The broadcaster resumes from its committed offset**, so after downtime it relays a backlog
+  as if it were live. For a live relay, starting from the newest offset is probably right.
+- **A broker outage leaves a gap in the tape**: the producer stalls on the broker (one failed
+  publish in a 60 s outage, not thousands), the synthetic feed generates nothing meanwhile,
+  and nothing catches up — ~3,550 trades' worth of tape is simply absent (`PERFORMANCE.md`).
 - **The Alpaca adapter has never run against the live API.** No credentials here. See §16.
 - **One aggregator instance.** Per-symbol state lives in its memory, so a second instance
   needs that state to survive a partition reassignment — the point at which the
@@ -1197,18 +1260,15 @@ From `CLAUDE.md` and the repository's own standards:
 
 ## 21. Recommended next step
 
-**Phase 10 — observability and performance measurement.** It is the only remaining phase with
-no dependency on anything else unbuilt (§17's Phase 11 wants a failure-injection harness and
-`benchmarks/`-backed numbers to check against; Phase 12 wants both of those plus everything
-else). Concretely: Prometheus metrics across every service, correlation-id propagation from
-HTTP through Kafka, a committed Grafana dashboard, and real benchmarks in `benchmarks/` —
-currently empty, meaning no performance number has ever been quotable about this system.
+**Before Phase 11, fix the two pipeline correctness gaps Phase 10 found** (§18): publish live
+1m bars to `tw.market.bars.1m.v1` (without them, live paper trading and anomaly detection do
+nothing), and make synthetic trade ids unique across producer runs (without that, new trades
+are silently discarded). Both are small, both have a metric that will show the fix working
+(`tradewatch_events_published_total{event_type="market.bar.closed"}`, and the trades table's
+newest `recorded_at`), and Phase 11's end-to-end tests would otherwise be written against a
+pipeline that silently drops data.
 
-A visual design pass on the frontend is also overdue and explicitly not part of any numbered
-phase (§13) — every page through `/anomalies` and `/alerts` is functional, plain, and
-deliberately unstyled. Worth doing whenever it is, but it does not block Phase 10.
-
-The one thing worth closing opportunistically rather than waiting for Phase 11: the flaky
-`test_a_connection_closes_itself_the_instant_its_token_expires` test (§17's Phase 11 entry has
-the full diagnosis and the two candidate fixes) costs nothing to fix now and keeps costing
-CI reruns until someone does.
+**Then Phase 11 — end-to-end and failure-recovery hardening.** `playwright-core` is already a
+frontend dev dependency (the end-to-end latency benchmark drives Chrome with it), the
+recovery benchmark is the start of a failure-injection harness, and the Grafana dashboard is
+how a chaos run will be read.

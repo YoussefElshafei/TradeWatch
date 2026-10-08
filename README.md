@@ -5,23 +5,26 @@ storage, configurable trading strategies, backtesting, simulated trading, detect
 statistically unusual market activity, and alerting — behind a FastAPI backend and a React
 dashboard.
 
-**Status: Phase 3 complete — real bars, built from trades, over a month of history.**
+**Status: Phase 10 complete — observable, and measured.** Phases 0–10 of
+[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) are built: ingestion, Kafka, bar aggregation,
+live streaming, accounts, strategies and backtesting, paper trading, anomaly detection,
+alerts, and now Prometheus metrics on every process, a Grafana dashboard, and the first
+benchmarks. Phase 11 (end-to-end and failure-recovery hardening) is next.
 
 ```
-Provider → normalize → Kafka ─┬→ Processor  → PostgreSQL → FastAPI → React chart
-                              └→ Aggregator → PostgreSQL (1m bars → 5m/1h/1d rollups)
+Provider → normalize → Kafka ─┬→ Processor     → PostgreSQL → FastAPI ─→ React
+                              ├→ Aggregator    → PostgreSQL (1m → 5m/1h/1d)
+                              ├→ Broadcaster   → Redis Pub/Sub → /ws/market
+                              ├→ Paper trading → PostgreSQL → fills topic ─┐
+                              └→ Anomaly detector → anomalies topic ───────┴→ Alert dispatcher → /ws/alerts
 ```
 
-Three independent processes. Two consumer groups read the same trade topic with independent
-offsets, which is the fan-out ADR-0001 chose Kafka for and Phase 2 had not yet demonstrated.
+Nine processes, each its own consumer group or service, each exporting `/metrics`.
 Delivery is at-least-once, every write is idempotent, and offsets are committed only after
-the data is stored.
-
-There is no strategy engine, no ML and no real dashboard. See
-[docs/PIPELINE.md](docs/PIPELINE.md) for how the pipeline works,
-[docs/BACKFILL.md](docs/BACKFILL.md) for history and bar aggregation,
+the data is stored. See [docs/PROJECT_STATE.md](docs/PROJECT_STATE.md) for the full current
+picture, [docs/PIPELINE.md](docs/PIPELINE.md) for the pipeline,
 [docs/SCHEMA.md](docs/SCHEMA.md) for the data model, and
-[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) for what comes next.
+[PERFORMANCE.md](PERFORMANCE.md) for what has been measured and under what conditions.
 
 ## Scope, stated plainly
 
@@ -63,6 +66,12 @@ powershell -File scripts/dev.ps1        # Windows
 Open **http://localhost:5173** (not `127.0.0.1` — the refresh cookie is scoped to the API's
 host, so a reload there signs you out). Logs are in `backend/.run-logs/`. Each process can
 still be run on its own, e.g. `cd backend && uv run tradewatch-consumer`.
+
+**Observability.** Grafana is at **http://127.0.0.1:3300** with the TradeWatch dashboard as
+its home page (anonymous read-only, local only); Prometheus is at http://localhost:9090.
+Every process serves its own `/metrics` on a loopback port (9310–9318, listed in
+`backend/src/tradewatch/observability/metrics.py`), and `GET /ready` names each dependency —
+`database`, `redis`, `kafka` — separately. See [ADR-0017](ADR/ADR-0017-observability-metrics-and-measurement.md).
 
 For history to backtest against later, run the one-shot backfill once:
 
@@ -112,7 +121,7 @@ tradewatch/
 │   │   ├── api/               FastAPI gateway — the only inbound door
 │   │   ├── workers/           The producer, the consumer, and jobs
 │   │   ├── config/            Typed settings and .env loading
-│   │   └── observability/     Structured logging (metrics and tracing in Phase 10)
+│   │   └── observability/     Structured logging, correlation context, Prometheus metrics
 │   ├── alembic/               Migrations; the schema's source of truth
 │   ├── tests/{unit,integration,api}/
 │   └── pyproject.toml         Dependencies and every tool's configuration
@@ -121,7 +130,7 @@ tradewatch/
 │   └── tests/                 Vitest setup; specs sit next to the code they test
 ├── docker/                    Compose stack and the backend image
 ├── scripts/                   setup and check, in bash and PowerShell
-├── benchmarks/                Measured results — the only source of any number quoted
+├── benchmarks/                Benchmarks and their dated results — the only source of any number quoted
 ├── docs/                      Documents belonging to no single component
 ├── ADR/                       Architecture decision records
 ├── ARCHITECTURE.md            The system design
@@ -247,7 +256,7 @@ Frontend configuration uses Vite's `VITE_` prefix, which is a useful accident: o
 | Live provider | pytest, marked `provider` | Opt-in only — never in CI |
 | Frontend unit | Vitest + Testing Library | Every push |
 | End-to-end | Playwright | Phase 11 |
-| Performance | k6 / Locust | Phase 10, nightly |
+| Performance | `benchmarks/*.py` (see [PERFORMANCE.md](PERFORMANCE.md)) | On demand; not in CI |
 
 Four rules hold from here on. Tests never read the developer's environment — every `TW_`
 variable is stripped before each test, so a test that passes on one machine passes on all of

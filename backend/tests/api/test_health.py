@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
 from tradewatch import __version__
 from tradewatch.api.app import REQUEST_ID_HEADER, create_app
+from tradewatch.api.routes import health as health_routes
 from tradewatch.api.routes.health import register_readiness_check
 from tradewatch.config.settings import Settings
 
@@ -79,6 +83,35 @@ class TestReadiness:
 
         assert response.status_code == 503
         assert response.json()["checks"] == {"kafka": "TimeoutError"}
+
+    def test_each_dependency_is_reported_by_name(self, offline_client: TestClient) -> None:
+        """Phase 10: the body says *which* dependency is down, not just that one is."""
+        checks = offline_client.get("/ready").json()["checks"]
+
+        assert set(checks) == {"database", "redis", "kafka"}
+        assert checks["database"] != "ok"
+
+    def test_a_hung_check_is_named_and_does_not_hold_up_the_others(
+        self, registry_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(health_routes, "_CHECK_TIMEOUT_SECONDS", 0.2)
+
+        async def hangs() -> str | None:
+            await asyncio.sleep(30)
+            return None
+
+        async def healthy() -> str | None:
+            return None
+
+        register_readiness_check("database", healthy)
+        register_readiness_check("kafka", hangs, critical=False)
+
+        started = time.perf_counter()
+        response = registry_client.get("/ready")
+
+        assert time.perf_counter() - started < 5
+        assert response.status_code == 200  # kafka is not critical
+        assert response.json()["checks"] == {"database": "ok", "kafka": "timeout"}
 
     def test_liveness_is_independent_of_readiness(self, registry_client: TestClient) -> None:
         """A liveness probe that fails during an outage turns it into a restart loop."""

@@ -73,6 +73,7 @@ from tradewatch.infrastructure.repositories import (
 )
 from tradewatch.infrastructure.repositories.alerts import DIGEST_EVENT_TYPE
 from tradewatch.observability.logging import configure_logging, get_logger
+from tradewatch.observability.metrics import ALERTS_DISPATCHED, start_metrics_server
 
 log = get_logger(__name__)
 
@@ -228,6 +229,7 @@ class AlertDispatcherService:
                 )
                 inserted = await alert_repository.insert_if_new(row)
                 if inserted:
+                    ALERTS_DISPATCHED.labels(event_type=candidate.triggering_event_type).inc()
                     alert_event = _build_alert_event(
                         alert_id,
                         symbol=candidate.symbol,
@@ -300,6 +302,7 @@ class AlertDispatcherService:
         inserted = await alert_repository.insert_if_new(row)
         if not inserted:
             return None
+        ALERTS_DISPATCHED.labels(event_type=DIGEST_EVENT_TYPE).inc()
 
         return _build_alert_event(
             digest_id,
@@ -415,6 +418,7 @@ def main() -> int:
         return 2
 
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    start_metrics_server("alert-dispatcher", settings.app)
 
     async def _run() -> None:
         stop = asyncio.Event()

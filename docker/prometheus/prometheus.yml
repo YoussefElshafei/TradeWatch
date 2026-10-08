@@ -1,0 +1,35 @@
+# Scrapes every TradeWatch process plus the consumer-lag exporter.
+#
+# The services run on the host during development (README, scripts/dev.ps1), so targets
+# are `host.docker.internal:<port>` — the ports in backend/src/tradewatch/observability/
+# metrics.py DEFAULT_PORTS. A process that is not running shows as a down target, which is
+# itself the signal: the dashboard's "targets up" panel is the first thing to read.
+#
+# 5s, not the usual 15s: the benchmarks read rates and percentiles over one-minute windows,
+# and 15s would leave four points to draw them from.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: api
+    static_configs: [{ targets: ['host.docker.internal:9310'] }]
+  - job_name: producer
+    static_configs: [{ targets: ['host.docker.internal:9311'] }]
+  - job_name: consumer
+    static_configs: [{ targets: ['host.docker.internal:9312'] }]
+  - job_name: aggregator
+    static_configs: [{ targets: ['host.docker.internal:9313'] }]
+  - job_name: broadcaster
+    static_configs: [{ targets: ['host.docker.internal:9314'] }]
+  - job_name: backtest-runner
+    static_configs: [{ targets: ['host.docker.internal:9315'] }]
+  - job_name: paper-trading
+    static_configs: [{ targets: ['host.docker.internal:9316'] }]
+  - job_name: anomaly-detector
+    static_configs: [{ targets: ['host.docker.internal:9317'] }]
+  - job_name: alert-dispatcher
+    static_configs: [{ targets: ['host.docker.internal:9318'] }]
+  - job_name: kafka-exporter
+    static_configs: [{ targets: ['kafka-exporter:9308'] }]

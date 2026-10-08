@@ -90,6 +90,7 @@ from tradewatch.infrastructure.repositories import (
     ModelVersionRepository,
 )
 from tradewatch.observability.logging import configure_logging, get_logger
+from tradewatch.observability.metrics import ANOMALIES_DETECTED, start_metrics_server
 
 log = get_logger(__name__)
 
@@ -330,6 +331,7 @@ class AnomalyDetectionService:
                 error_type=type(error).__name__,
             )
 
+        ANOMALIES_DETECTED.labels(severity=detection.severity.value).inc()
         log.info(
             "anomaly_detector.detected",
             symbol=event.symbol,
@@ -540,6 +542,7 @@ def main() -> int:
         return 2
 
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    start_metrics_server("anomaly-detector", settings.app)
 
     async def _run() -> None:
         stop = asyncio.Event()

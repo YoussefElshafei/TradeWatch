@@ -19,7 +19,7 @@ from tradewatch.infrastructure.providers.normalization import EventFactory
 from tradewatch.infrastructure.providers.replay import ReplayProvider
 from tradewatch.infrastructure.providers.resilience import RetryPolicy
 from tradewatch.infrastructure.providers.synthetic import SyntheticProvider
-from tradewatch.observability.logging import get_logger
+from tradewatch.observability.logging import bind_correlation, get_logger
 
 __all__ = ["build_provider", "retry_policy_from_settings"]
 
@@ -59,6 +59,9 @@ def build_provider(
         clock=clock,  # type: ignore[arg-type]
         correlation_id=new_id(),
     )
+    # Every log line this process writes from here on names the run's correlation id — the
+    # same id every event it publishes carries, and every derived event inherits (§7.1).
+    bind_correlation([factory.correlation_id])
 
     match provider_settings.provider:
         case ProviderName.SYNTHETIC:

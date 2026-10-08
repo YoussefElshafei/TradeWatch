@@ -4,14 +4,15 @@
 a liveness probe that fails when the database is down causes a restart loop that makes the
 outage worse.
 
-`/ready` answers "can this process serve traffic?" and checks dependencies. Phase 0 has no
-dependencies wired, so it reports an empty check set; Phase 1 registers PostgreSQL,
-Phase 2 Kafka, Phase 4 Redis. The registry exists now so those phases add a line rather
-than a design.
+`/ready` answers "can this process serve traffic?" and reports every dependency by name —
+`database` (critical), `redis` and `kafka` (reported, never fatal: the API serves reads
+from PostgreSQL without either) — so an outage names itself instead of hiding behind one
+aggregate status.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
@@ -25,6 +26,9 @@ router = APIRouter(tags=["ops"])
 #: name -> check. A check returns None when healthy, or a short reason when not.
 ReadinessCheck = Callable[[], Awaitable[str | None]]
 _CHECKS: dict[str, tuple[ReadinessCheck, bool]] = {}
+
+#: Per check. Above `BrokerHealth`'s own connect timeout, so its more specific answer wins.
+_CHECK_TIMEOUT_SECONDS = 4.0
 
 
 def register_readiness_check(name: str, check: ReadinessCheck, *, critical: bool = True) -> None:
@@ -65,6 +69,26 @@ class ReadinessResponse(BaseModel):
     )
 
 
+async def _run_check(check: ReadinessCheck) -> str | None:
+    """One check, bounded in time, with an exception reported as its own failure reason.
+
+    The checks run concurrently and each has its own deadline, so one hung dependency makes
+    `/ready` report *that* dependency as `timeout` instead of making the whole probe hang —
+    the "exactly which one is down" this endpoint exists to answer.
+    """
+    task = asyncio.ensure_future(check())
+    # `asyncio.wait`, not `wait_for`: only *our* deadline is "timeout". A check that itself
+    # raises `TimeoutError` (a driver's own) is reported under that name, like any failure.
+    done, _pending = await asyncio.wait({task}, timeout=_CHECK_TIMEOUT_SECONDS)
+    if not done:
+        task.cancel()
+        return "timeout"
+    error = task.exception()
+    if error is not None:  # a check that raises is a check that failed
+        return type(error).__name__
+    return task.result()
+
+
 @router.get("/health", response_model=HealthResponse, summary="Liveness probe")
 async def health() -> HealthResponse:
     """Report that the process is running. Checks nothing external, on purpose."""
@@ -75,18 +99,19 @@ async def health() -> HealthResponse:
 async def ready(response: Response) -> ReadinessResponse:
     """Report whether every registered dependency is usable.
 
-    Returns 503 when any check fails, so a load balancer stops sending traffic here
+    Returns 503 when a critical check fails, so a load balancer stops sending traffic here
     without the process being killed.
     """
-    results: dict[str, str] = {}
-    healthy = True
-    for name, (check, critical) in _CHECKS.items():
-        try:
-            failure = await check()
-        except Exception as exc:  # a check that raises is a check that failed
-            failure = type(exc).__name__
-        results[name] = "ok" if failure is None else failure
-        healthy = healthy and (failure is None or not critical)
+    names = list(_CHECKS)
+    outcomes = await asyncio.gather(*(_run_check(_CHECKS[name][0]) for name in names))
+    results = {
+        name: "ok" if failure is None else failure
+        for name, failure in zip(names, outcomes, strict=True)
+    }
+    healthy = all(
+        failure is None or not _CHECKS[name][1]
+        for name, failure in zip(names, outcomes, strict=True)
+    )
 
     if not healthy:
         response.status_code = 503

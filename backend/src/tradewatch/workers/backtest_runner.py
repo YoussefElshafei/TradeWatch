@@ -54,6 +54,7 @@ from tradewatch.infrastructure.repositories import (
     StrategyRepository,
 )
 from tradewatch.observability.logging import configure_logging, get_logger
+from tradewatch.observability.metrics import start_metrics_server
 
 log = get_logger(__name__)
 
@@ -275,6 +276,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    start_metrics_server("backtest-runner", settings.app)
 
     try:
         asyncio.run(

@@ -47,6 +47,7 @@ from tradewatch.infrastructure.repositories import (
     TradeRepository,
 )
 from tradewatch.observability.logging import get_logger
+from tradewatch.observability.metrics import CACHE_LOOKUPS
 
 router = APIRouter(prefix="/api/v1", tags=["market data"])
 
@@ -72,6 +73,9 @@ async def _read_through[ModelT: BaseModel](
     """
     if enabled:
         cached = await cache.get_json(key)
+        # `tw:<kind>:...` — the kind is a bounded label; the rest of the key is not.
+        kind = key.split(":", 2)[1]
+        CACHE_LOOKUPS.labels(cache=kind, result="hit" if cached is not None else "miss").inc()
         if cached is not None:
             return model.model_validate(cached)
 

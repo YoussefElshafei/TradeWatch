@@ -99,6 +99,7 @@ from tradewatch.infrastructure.repositories import (
     PositionRepository,
 )
 from tradewatch.observability.logging import configure_logging, get_logger
+from tradewatch.observability.metrics import ORDERS, SIGNALS, start_metrics_server
 
 log = get_logger(__name__)
 
@@ -317,6 +318,13 @@ class PaperTradingService:
                 risk_limits=context.risk_limits,
                 execution_config=context.execution_config,
             )
+            # A signal fired on *this* bar either became an order immediately or was parked
+            # as the next bar's pending fill. An outcome that settles a signal parked on the
+            # previous bar is that earlier signal, already counted.
+            if new_runtime.pending_signal is not None or (
+                outcome is not None and runtime.pending_signal is None
+            ):
+                SIGNALS.inc()
             memory.strategy_state = new_runtime.strategy_state
             memory.pending_signal = new_runtime.pending_signal
             memory.last_bar_at = bar.bar_start
@@ -406,6 +414,7 @@ class PaperTradingService:
             )
             session.add(order)
             await session.flush()
+            ORDERS.labels(outcome="rejected").inc()
             log.info(
                 "paper_trading.order_rejected",
                 deployment_id=str(deployment.id),
@@ -455,6 +464,7 @@ class PaperTradingService:
             cash=portfolio.cash_balance,
             positions_value=positions_value,
         )
+        ORDERS.labels(outcome="filled").inc()
         log.info(
             "paper_trading.order_filled",
             deployment_id=str(deployment.id),
@@ -605,6 +615,7 @@ def main() -> int:
         return 2
 
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    start_metrics_server("paper-trading", settings.app)
 
     async def _run() -> None:
         stop = asyncio.Event()

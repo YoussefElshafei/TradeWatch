@@ -1,6 +1,7 @@
-"""Logging now; metrics and tracing in Phase 10."""
+"""Structured logging, correlation context, and Prometheus metrics."""
 
 from tradewatch.observability.logging import (
+    bind_correlation,
     bind_request_context,
     clear_request_context,
     configure_logging,
@@ -9,6 +10,7 @@ from tradewatch.observability.logging import (
 )
 
 __all__ = [
+    "bind_correlation",
     "bind_request_context",
     "clear_request_context",
     "configure_logging",

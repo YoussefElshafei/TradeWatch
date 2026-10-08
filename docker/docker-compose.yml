@@ -3,8 +3,8 @@
 #   docker compose -f docker/docker-compose.yml up -d           # infrastructure only
 #   docker compose -f docker/docker-compose.yml --profile app up  # + the API in a container
 #
-# Phase 0 runs PostgreSQL and Redis. Kafka joins in Phase 2, when there is something that
-# needs a durable log (ADR-0001) — adding a broker now would be decoration.
+# PostgreSQL, Redis and Kafka, plus (Phase 10) Prometheus on :9090, Grafana on :3300 with
+# the TradeWatch dashboard as its home page, and kafka-exporter for consumer-group lag.
 #
 # The API and the frontend normally run on the host during development, because the
 # reload loop is faster and the debugger just works. The `app` profile exists for
@@ -110,6 +110,67 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # --- Observability (Phase 10) -------------------------------------------------------
+  # Consumer-group lag, read from the broker's committed offsets. Outside the consumers on
+  # purpose: a consumer cannot report its own lag while it is down, which is exactly when
+  # the number matters (failure F10, and the recovery benchmark).
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    container_name: tradewatch-kafka-exporter
+    command: ['--kafka.server=kafka:19092']
+    ports:
+      - '127.0.0.1:9308:9308'
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: tradewatch-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+    ports:
+      - '127.0.0.1:9090:9090'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    # The services run on the host; this name resolves to it on Docker Desktop, and the
+    # mapping makes it resolve on Linux too.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9090/-/ready']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: tradewatch-grafana
+    environment:
+      # Local development only: anonymous read access so the dashboard opens without a
+      # login. Bound to loopback below, like everything else in this file.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tradewatch.json
+    ports:
+      - '127.0.0.1:3300:3000'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/health']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   api:
     profiles: ['app']
     build:
@@ -145,3 +206,5 @@ volumes:
     name: tradewatch-postgres-data
   kafka-data:
     name: tradewatch-kafka-data
+  prometheus-data:
+    name: tradewatch-prometheus-data

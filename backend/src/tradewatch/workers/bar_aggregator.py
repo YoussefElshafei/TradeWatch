@@ -43,6 +43,7 @@ from tradewatch.infrastructure.events.kafka import (
     open_dead_letter_sink,
 )
 from tradewatch.observability.logging import configure_logging, get_logger
+from tradewatch.observability.metrics import start_metrics_server
 
 log = get_logger(__name__)
 
@@ -228,6 +229,7 @@ def main() -> int:
         return 2
 
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    start_metrics_server("aggregator", settings.app)
 
     async def _run() -> None:
         stop = asyncio.Event()

@@ -51,6 +51,7 @@ from tradewatch.infrastructure.database.session import Database
 from tradewatch.infrastructure.events.kafka import KafkaEventPublisher, Topics, ensure_topics
 from tradewatch.infrastructure.providers.factory import build_provider
 from tradewatch.observability.logging import configure_logging, get_logger
+from tradewatch.observability.metrics import start_metrics_server
 from tradewatch.workers.ingestion import build_service, run_ingestion
 
 log = get_logger(__name__)
@@ -198,6 +199,7 @@ def main() -> int:
         return 2
 
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    start_metrics_server("producer", settings.app)
 
     async def _run() -> None:
         stop = asyncio.Event()
