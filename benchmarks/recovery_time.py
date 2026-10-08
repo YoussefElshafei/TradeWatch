@@ -123,23 +123,26 @@ class _TradeOffsets:
         self._topic = topic
 
     async def total(self) -> int:
+        # An unsubscribed consumer has no metadata for the topic, so `partitions_for_topic`
+        # answers None (the first version of this summed nothing and reported 0 trades/s).
+        admin = AIOKafkaAdminClient(bootstrap_servers=self._bootstrap)
+        await admin.start()
+        try:
+            described = await admin.describe_topics([self._topic])
+        finally:
+            await admin.close()
+        partitions = [
+            TopicPartition(self._topic, p["partition"]) for p in described[0]["partitions"]
+        ]
+        if not partitions:
+            raise RuntimeError(f"{self._topic} has no partitions — wrong topic prefix?")
         reader = AIOKafkaConsumer(bootstrap_servers=self._bootstrap)
         await reader.start()
         try:
-            partitions = [
-                TopicPartition(self._topic, p)
-                for p in reader.partitions_for_topic(self._topic) or ()
-            ]
-            if not partitions:
-                await reader.topics()  # force a metadata fetch, then ask again
-                partitions = [
-                    TopicPartition(self._topic, p)
-                    for p in reader.partitions_for_topic(self._topic) or ()
-                ]
             ends = await reader.end_offsets(partitions)
-            return sum(ends.values())
         finally:
             await reader.stop()
+        return sum(ends.values())
 
 
 async def _groups(bootstrap: str) -> list[str]:
