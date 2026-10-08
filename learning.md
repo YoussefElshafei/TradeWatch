@@ -623,7 +623,9 @@ Median speedup: 2.4x
 ```
 
 Read this as "the cache measurably helps, on one laptop, once" — not as a claim about
-production latency. `benchmarks/` stays empty until Phase 10 gives it a committed methodology
+production latency. **Superseded (Phase 10):** `bench_cache.py` was removed; the cached vs
+uncached figures that may be quoted now come only from `benchmarks/api_latency.py`, through
+`PERFORMANCE.md`. The numbers above are kept as a record of this session, not as a result. `benchmarks/` stays empty until Phase 10 gives it a committed methodology
 and a recorded hardware config, exactly as `docs/PROJECT_STATE.md` §1 requires.
 
 #### Tests written
