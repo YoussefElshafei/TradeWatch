@@ -53,6 +53,7 @@ from tradewatch.infrastructure.events.kafka.errors import (
 )
 from tradewatch.infrastructure.events.kafka.topics import Topics, UnroutableEventError
 from tradewatch.observability.logging import get_logger
+from tradewatch.observability.metrics import EVENTS_PUBLISHED
 
 __all__ = ["KafkaEventPublisher", "ProducerClient", "PublisherStats"]
 
@@ -264,6 +265,7 @@ class KafkaEventPublisher:
         topic, key, payload = record
         await self._send(topic, key, payload, event)
         self._stats.published += 1
+        EVENTS_PUBLISHED.labels(event_type=event.event_type.value).inc()
 
     async def publish_many(self, events: Sequence[MarketEvent]) -> int:
         """Publish a batch, returning how many the broker acknowledged.
@@ -319,6 +321,7 @@ class KafkaEventPublisher:
                 continue
             accepted += 1
             self._stats.published += 1
+            EVENTS_PUBLISHED.labels(event_type=event.event_type.value).inc()
 
         if failures:
             session_fatal = next(

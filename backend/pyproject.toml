@@ -47,6 +47,10 @@ dependencies = [
     "tzdata>=2026.4",
     "uvicorn[standard]>=0.38",
     "websockets>=15",
+    # Phase 10: the reference Prometheus client, maintained by the Prometheus project. It
+    # ships the exposition format, a threaded HTTP exporter and the text parser the tests
+    # use to read a scrape back — writing any of the three by hand would be a worse copy.
+    "prometheus-client>=0.21",
 ]
 
 [project.scripts]

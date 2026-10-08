@@ -23,11 +23,12 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, QueuePool
 from sqlalchemy.sql import text
 
 from tradewatch.config.settings import DatabaseSettings
 from tradewatch.observability.logging import get_logger
+from tradewatch.observability.metrics import DB_POOL_CONNECTIONS
 
 log = get_logger(__name__)
 
@@ -109,6 +110,23 @@ async def session_scope(
         await session.close()
 
 
+def _export_pool_gauges(engine: AsyncEngine) -> None:
+    """Point `tradewatch_db_pool_connections` at this engine's pool, read at scrape time.
+
+    One engine per process in practice, so the last one connected owns the series. A
+    `NullPool` (migrations, tests) has no size to report and is skipped.
+    """
+    pool = engine.sync_engine.pool
+    if not isinstance(pool, QueuePool):
+        return
+    DB_POOL_CONNECTIONS.labels(state="size").set_function(pool.size)
+    DB_POOL_CONNECTIONS.labels(state="checked_out").set_function(pool.checkedout)
+    DB_POOL_CONNECTIONS.labels(state="idle").set_function(pool.checkedin)
+    # `overflow()` counts from -pool_size while the pool fills; only the part above zero is
+    # connections opened beyond `pool_size`.
+    DB_POOL_CONNECTIONS.labels(state="overflow").set_function(lambda: max(pool.overflow(), 0))
+
+
 async def check_connection(engine: AsyncEngine) -> str | None:
     """Readiness check for `/ready`.
 
@@ -158,6 +176,7 @@ class Database:
             return
         self._engine = create_engine(self._settings, echo=self._echo)
         self._session_factory = create_session_factory(self._engine)
+        _export_pool_gauges(self._engine)
         log.info("database.engine_created", pool_size=self._settings.database_pool_size)
 
     async def disconnect(self) -> None:

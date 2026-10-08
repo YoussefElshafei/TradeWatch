@@ -27,6 +27,8 @@ because it commits after every non-empty batch.
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
+import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -45,11 +47,23 @@ from tradewatch.infrastructure.events.kafka.errors import (
     is_retryable,
 )
 from tradewatch.infrastructure.events.kafka.topics import Topics
-from tradewatch.observability.logging import get_logger
+from tradewatch.observability.logging import bind_correlation, get_logger
+from tradewatch.observability.metrics import (
+    BATCH_DURATION,
+    EVENT_DELIVERY,
+    EVENTS_CONSUMED,
+    EVENTS_MALFORMED,
+)
 
 __all__ = ["ConsumerClient", "KafkaConsumerStats", "KafkaEventConsumer"]
 
 log = get_logger(__name__)
+
+#: How often each consumer writes one `kafka.consumer_progress` line. Often enough that the
+#: logs of every consumer group name the correlation id it is currently handling — which is
+#: what makes an id traceable across processes — and rarely enough that a busy group does
+#: not drown its own log the way a line per batch would.
+_PROGRESS_EVERY_SECONDS = 30.0
 
 
 class ConsumerClient(Protocol):
@@ -130,6 +144,8 @@ class KafkaEventConsumer:
         self._dead_letters = dead_letters
         self._started = False
         self._stats = KafkaConsumerStats()
+        self._progress_at = time.monotonic()
+        self._decoded_at_progress = 0
 
     @property
     def stats(self) -> KafkaConsumerStats:
@@ -235,7 +251,9 @@ class KafkaEventConsumer:
         """
         while True:
             positioned = await self._poll_once()
+            started = time.perf_counter()
             yield positioned
+            self._observe_handling(positioned, started)
 
     async def batches(self) -> AsyncIterator[Sequence[MarketEvent]]:
         """Yield one batch of decoded events per poll, until cancelled.
@@ -246,7 +264,20 @@ class KafkaEventConsumer:
         """
         while True:
             positioned = await self._poll_once()
+            started = time.perf_counter()
             yield [event for _position, event in positioned]
+            self._observe_handling(positioned, started)
+
+    def _observe_handling(self, positioned: Sequence[object], started: float) -> None:
+        """Record how long the caller spent on the batch it was just handed.
+
+        The generator is suspended at ``yield`` while the worker stores, aggregates, scores
+        or relays the batch, so the time until it asks for the next one *is* that group's
+        processing stage — measured here once instead of in eight workers. Empty polls are
+        not recorded: a stage that did nothing would drag every percentile toward zero.
+        """
+        if positioned:
+            BATCH_DURATION.labels(group=self._group_id).observe(time.perf_counter() - started)
 
     async def _poll_once(self) -> list[tuple[StreamPosition, MarketEvent]]:
         """One poll: fetch, decode, quarantine what cannot be read, return the survivors."""
@@ -277,6 +308,18 @@ class KafkaEventConsumer:
         self._stats.records += records
         self._stats.decoded += len(positioned)
 
+        now = dt.datetime.now(dt.UTC)
+        for _position, event in positioned:
+            EVENTS_CONSUMED.labels(group=self._group_id, event_type=event.event_type.value).inc()
+            EVENT_DELIVERY.labels(group=self._group_id).observe(
+                max((now - event.ingested_at).total_seconds(), 0.0)
+            )
+        # Every log line the worker writes while handling this batch now names the
+        # correlation id(s) it carries, so one id can be followed from producer to alert.
+        bind_correlation(event.correlation_id for _position, event in positioned)
+        if positioned and time.monotonic() - self._progress_at >= _PROGRESS_EVERY_SECONDS:
+            self._log_progress()
+
         if records and not positioned:
             # Every record in this poll was quarantined. Their dead-letter writes are
             # acknowledged, so they are finished — but the caller is about to see an empty
@@ -286,6 +329,18 @@ class KafkaEventConsumer:
             log.warning("kafka.poison_poll_committed", records=records)
 
         return positioned
+
+    def _log_progress(self) -> None:
+        now = time.monotonic()
+        log.info(
+            "kafka.consumer_progress",
+            group_id=self._group_id,
+            decoded=self._stats.decoded - self._decoded_at_progress,
+            seconds=round(now - self._progress_at, 1),
+            malformed_total=self._stats.malformed,
+        )
+        self._progress_at = now
+        self._decoded_at_progress = self._stats.decoded
 
     @staticmethod
     def _position_of(message: Any, partition: Any) -> StreamPosition:
@@ -349,6 +404,7 @@ class KafkaEventConsumer:
             return decode(message.value)
         except EventDecodeError as error:
             self._stats.malformed += 1
+            EVENTS_MALFORMED.labels(group=self._group_id).inc()
             await self._quarantine(message, partition, error)
             return None
 

@@ -8,6 +8,7 @@ phase boring.
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -36,12 +37,19 @@ from tradewatch.config.env import load_env_file
 from tradewatch.config.settings import Settings, get_settings
 from tradewatch.infrastructure.cache import RedisCache
 from tradewatch.infrastructure.database.session import Database
+from tradewatch.infrastructure.events.broker_health import BrokerHealth
 from tradewatch.observability.logging import (
     bind_request_context,
     clear_request_context,
     configure_logging,
     get_logger,
     new_request_id,
+)
+from tradewatch.observability.metrics import (
+    HTTP_REQUEST_DURATION,
+    HTTP_REQUESTS,
+    WEBSOCKET_CONNECTIONS,
+    start_metrics_server,
 )
 
 REQUEST_ID_HEADER = "X-Request-ID"
@@ -73,6 +81,18 @@ def _security_headers(request: Request) -> dict[str, str]:
     if request.url.path not in _DOCS_PATHS:
         headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     return headers
+
+
+def _route_template(request: Request) -> str:
+    """The matched route's template (`/api/v1/backtests/{backtest_id}`), never the raw path.
+
+    Raw paths carry ids, and one label value per id is unbounded cardinality. Anything that
+    matched no route — a scanner probing `/wp-admin` — is folded into one value for the
+    same reason.
+    """
+    route = request.scope.get("route")
+    path = getattr(route, "path", None)
+    return path if isinstance(path, str) else "unmatched"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -121,6 +141,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         ws_alerts_manager.start()
         app.state.ws_alerts_manager = ws_alerts_manager
+        WEBSOCKET_CONNECTIONS.labels(channel="market").set_function(
+            lambda: ws_manager.connection_count
+        )
+        WEBSOCKET_CONNECTIONS.labels(channel="alerts").set_function(
+            lambda: ws_alerts_manager.connection_count
+        )
+
+        kafka = BrokerHealth(settings.kafka.kafka_bootstrap)
+        # critical=False for the same reason as Redis: every HTTP read is served from
+        # PostgreSQL, so a broker outage stops new data arriving but must not take the API
+        # out of a load balancer. It is still reported by name, which is the point.
+        register_readiness_check("kafka", kafka.check, critical=False)
 
         try:
             yield
@@ -165,6 +197,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_id = request.headers.get(REQUEST_ID_HEADER) or new_request_id()
         bind_request_context(request_id=request_id)
         request.state.request_id = request_id
+        started = time.perf_counter()
+        status = 500
         try:
             try:
                 response = await call_next(request)
@@ -183,8 +217,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response.headers[REQUEST_ID_HEADER] = request_id
             for name, value in _security_headers(request).items():
                 response.headers[name] = value
+            status = response.status_code
             return response
         finally:
+            route = _route_template(request)
+            HTTP_REQUESTS.labels(method=request.method, route=route, status=str(status)).inc()
+            HTTP_REQUEST_DURATION.labels(method=request.method, route=route).observe(
+                time.perf_counter() - started
+            )
             clear_request_context()
 
     install_exception_handlers(app)
@@ -211,4 +251,7 @@ def bootstrap() -> FastAPI:
     load_env_file()
     settings = get_settings()
     configure_logging(level=settings.app.log_level, log_format=settings.app.log_format)
+    # Here, not in `create_app`: tests build many apps in one process and would fight over
+    # the port; uvicorn calls this factory once per serving process, reloader child included.
+    start_metrics_server("api", settings.app)
     return create_app(settings)

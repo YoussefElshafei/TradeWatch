@@ -45,6 +45,7 @@ from tradewatch.application.ports.market_data import (
 from tradewatch.domain.enums import BarInterval
 from tradewatch.domain.events import BarEvent, MarketEvent, QuoteEvent, event_summary
 from tradewatch.observability.logging import get_logger
+from tradewatch.observability.metrics import PROVIDER_LAG
 
 __all__ = ["IngestionService", "IngestionStats", "StreamKind"]
 
@@ -304,6 +305,10 @@ class IngestionService:
             return False
 
         self._stats.published += 1
+        # Live events only: `_publish_batch` carries backfilled history, whose "lag" is its
+        # age and would bury the live figure. Clamped at zero because a provider clock
+        # running ahead of ours is tolerated (`MarketEvent.lag_seconds`), not a negative lag.
+        PROVIDER_LAG.observe(max(event.lag_seconds, 0.0))
         return True
 
     async def _publish_batch(self, events: Sequence[MarketEvent]) -> int:
