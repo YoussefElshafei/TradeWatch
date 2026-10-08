@@ -57,7 +57,7 @@ every timestamp.
 
 **Does not prove:** latency over a real network, through a load balancer or TLS; with more
 than one connected browser; at the ingest benchmark's saturation rate (this is the
-synthetic feed's live rate, ~110 events/sec); React render time (the "next frame" row is
+synthetic feed's live rate — 15,338 events in 120 s, about 128/sec); React render time (the "next frame" row is
 the earliest paint opportunity, not a measured paint).
 
 ### API latency — cached reads 1.7–2.5x faster at concurrency 1
@@ -136,7 +136,9 @@ benchmark is the better guide to that).
 ## What the measurements and the new metrics found
 
 Phase 10 was "instrument, measure, then decide". Nothing below was optimised; each is
-recorded so the decision can be made with the number in hand.
+recorded so the decision can be made with the number in hand. Counts quoted in this section
+were read off the running system (Prometheus, `kafka-consumer-groups.sh`, the database) while
+investigating; they describe what was observed, and are not performance figures.
 
 **Correctness problems the instrumentation exposed** (pre-existing, not performance):
 
@@ -154,14 +156,15 @@ recorded so the decision can be made with the number in hand.
    reads that table, which is why it disagreed with the live Market page.
 3. **The broadcaster replays its backlog as live data.** It resumes from its committed
    offset, so after downtime browsers receive hours-old ticks presented as live: 2,093,299
-   messages (~3 hours) behind before the group was reset to latest for these measurements.
+   messages behind before the group was reset to latest for these measurements.
    A live relay probably wants to start from the newest offset.
 4. **The producer does not buffer during a broker outage** (recovery benchmark, above).
 
 **Bottlenecks recorded, not optimised:**
 
-5. **The persistence consumer** writes ~750 events/sec, and in the live stack its per-batch
-   processing p95 was ~0.8 s for 100 events — the slowest stage in the pipeline.
+5. **The persistence consumer** is the slowest stage measured: ~750 events/sec (ingest
+   benchmark), against a producer that publishes ~4,400/sec. The
+   `tradewatch_stage_duration_seconds{group="processor-persist"}` panel is where to watch it.
 6. **One API worker** tops out around 150–200 req/s even on `/health`, and the cached bars
    endpoint still takes ~44 ms at concurrency 1: the cache saves the query, not the
    validation and serialisation of 500 bars.
