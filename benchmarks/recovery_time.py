@@ -11,9 +11,10 @@ any worker that exits — the workers deliberately exit when the broker evicts t
    at or below its baseline maximum (plus a small slack), provided it then stays there for
    five consecutive samples. Report, per group: peak lag and seconds to recovered, from the
    broker answering and from the outage starting.
-4. Count trades stored with `occurred_at` inside the outage window, against the same span
-   just before it. Lag only measures what reached the broker; the producer does not buffer
-   while the broker is down, so "how much never arrived" is half of the answer.
+4. Read the trades topic's end offsets before, at, and after the outage: the trade rate the
+   broker acknowledged on either side. Lag only measures what reached the broker; the
+   producer does not buffer while it is down, so "how much never arrived" is half of the
+   answer.
 
 Lag is read straight from the broker rather than from Prometheus, so the result does not
 depend on scrape timing — and a consumer that never comes back shows as never recovering,
@@ -37,9 +38,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import asyncpg
 from _common import write_result
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient
 
 from tradewatch.config.env import load_env_file
@@ -108,20 +108,38 @@ class _LagReader:
         self._reader = None
 
 
-async def _trades_stored(
-    database_url: str, outage_start: dt.datetime, outage_end: dt.datetime
-) -> dict[str, int]:
-    """Trades stored for the outage window, against the same span just before it."""
-    span = outage_end - outage_start
-    dsn = database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-    connection = await asyncpg.connect(dsn)
-    try:
-        query = "SELECT count(*) FROM trades WHERE occurred_at >= $1 AND occurred_at < $2"
-        before = await connection.fetchval(query, outage_start - span, outage_start)
-        during = await connection.fetchval(query, outage_start, outage_end)
-    finally:
-        await connection.close()
-    return {"trades_stored_same_span_before": before, "trades_stored_during_outage": during}
+class _TradeOffsets:
+    """Trades the broker has acknowledged: the summed end offset of the trades topic.
+
+    Counted at the broker, not in PostgreSQL, because the database count is not usable on a
+    development stack: the synthetic provider restarts its trade ids at every producer start,
+    so after the first run its trades collide with stored ones and are dropped as duplicates
+    (a finding of this phase — see PERFORMANCE.md). End offsets only ever move forward with
+    acknowledged publishes, which is exactly "what reached the broker".
+    """
+
+    def __init__(self, bootstrap: str, topic: str) -> None:
+        self._bootstrap = bootstrap
+        self._topic = topic
+
+    async def total(self) -> int:
+        reader = AIOKafkaConsumer(bootstrap_servers=self._bootstrap)
+        await reader.start()
+        try:
+            partitions = [
+                TopicPartition(self._topic, p)
+                for p in reader.partitions_for_topic(self._topic) or ()
+            ]
+            if not partitions:
+                await reader.topics()  # force a metadata fetch, then ask again
+                partitions = [
+                    TopicPartition(self._topic, p)
+                    for p in reader.partitions_for_topic(self._topic) or ()
+                ]
+            ends = await reader.end_offsets(partitions)
+            return sum(ends.values())
+        finally:
+            await reader.stop()
 
 
 async def _groups(bootstrap: str) -> list[str]:
@@ -146,8 +164,13 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
     if not groups:
         raise SystemExit("no consumer groups found — is the stack running?")
 
+    trades = _TradeOffsets(
+        bootstrap, f"{os.environ.get('TW_KAFKA_TOPIC_PREFIX', 'tw')}.market.trades.v1"
+    )
     lag = _LagReader(bootstrap, groups)
     baseline: dict[str, int] = dict.fromkeys(groups, 0)
+    offsets_baseline_start = await trades.total()
+    baseline_started = time.monotonic()
     for _ in range(baseline_seconds):
         sample = await lag.sample()
         if sample is None:
@@ -155,6 +178,8 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
         baseline = {g: max(baseline[g], sample[g]) for g in groups}
         await asyncio.sleep(1)
     await lag.close()
+    offsets_at_outage = await trades.total()
+    baseline_span = time.monotonic() - baseline_started
 
     outage_started = time.monotonic()
     outage_started_utc = dt.datetime.now(dt.UTC)
@@ -165,6 +190,7 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
     restarted_utc = dt.datetime.now(dt.UTC)
 
     broker_back_at: float | None = None
+    offsets_at_broker_back = offsets_at_outage
     peak = dict.fromkeys(groups, 0)
     streak = dict.fromkeys(groups, 0)
     first_ok: dict[str, float] = {}
@@ -174,7 +200,9 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
         sample = await lag.sample()
         now = time.monotonic()
         if sample is not None:
-            broker_back_at = broker_back_at or now
+            if broker_back_at is None:
+                broker_back_at = now
+                offsets_at_broker_back = await trades.total()
             timeline.append({"t": round(now - restarted_at, 1), "lag": sample})
             for group in groups:
                 if group in recovered:
@@ -188,7 +216,22 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
                     recovered[group] = first_ok[group]
         await asyncio.sleep(1)
     await lag.close()
-    stored = await _trades_stored(os.environ["TW_DATABASE_URL"], outage_started_utc, restarted_utc)
+    offsets_after_restart = await trades.total()
+    # From the broker's first answer, not from `docker start`: the boot in between can
+    # publish nothing, and counting it would understate the rate and hide a catch-up burst.
+    after_span = time.monotonic() - (broker_back_at or restarted_at)
+    acknowledged = {
+        "trades_per_second_before_outage": round(
+            (offsets_at_outage - offsets_baseline_start) / baseline_span, 1
+        ),
+        "trades_acknowledged_during_outage": 0,  # the broker was stopped
+        "trades_per_second_after_restart": round(
+            (offsets_after_restart - offsets_at_broker_back) / after_span, 1
+        ),
+        "trades_never_published_estimate": round(
+            (offsets_at_outage - offsets_baseline_start) / baseline_span * outage
+        ),
+    }
 
     def since(moment: float | None, group: str) -> float | None:
         at = recovered.get(group)
@@ -207,7 +250,7 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
     intervals = [b["t"] - a["t"] for a, b in itertools.pairwise(timeline)]
     write_result(
         "recovery_time",
-        description="Lag drain and data lost after the Kafka broker is stopped for a fixed outage.",
+        description="Lag drain, and trades lost, after the broker is stopped for a fixed outage.",
         command=f"cd backend && uv run python ../benchmarks/recovery_time.py --outage {outage}",
         workload={
             "outage_seconds": outage,
@@ -229,7 +272,7 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
                 round(broker_back_at - restarted_at, 1) if broker_back_at else None
             ),
             "outage_window_utc": [outage_started_utc.isoformat(), restarted_utc.isoformat()],
-            "data_during_outage": stored,
+            "trades_at_the_broker": acknowledged,
             "groups": per_group,
             "all_recovered": len(recovered) == len(groups),
             "mean_seconds_between_samples": (
@@ -239,14 +282,16 @@ async def main(outage: int, baseline_seconds: int, give_up: int) -> None:
         },
         caveats=[
             "The producer does not buffer while the broker is down. Low peak lag means little "
-            "reached the broker to drain, not that nothing was lost — `data_during_outage` "
-            "counts what was actually stored for the outage window.",
+            "reached the broker to drain, not that nothing was lost: compare the trade rate "
+            "after the restart with the rate before. A buffering producer would show a "
+            "catch-up burst; `trades_never_published_estimate` is the pre-outage rate times "
+            "the outage length, an estimate, not a count.",
             "A clean `docker stop`/`start` of one broker. A network partition, a crashed "
             "broker with log recovery, or a multi-broker failover would behave differently.",
             "Includes the supervisor's restart delay for any worker that exited on eviction.",
         ],
     )
-    print(stored)  # noqa: T201
+    print(acknowledged)  # noqa: T201
     for group, data in per_group.items():
         print(group, data)  # noqa: T201
 
