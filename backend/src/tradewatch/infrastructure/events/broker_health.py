@@ -32,8 +32,14 @@ class BrokerHealth:
         reasons: list[str] = []
         for host, port in self._addresses:
             try:
+                # Happy Eyeballs: try every resolved address, staggered, instead of one after
+                # another. On Windows `localhost` resolves to `::1` first, Docker publishes
+                # the broker on IPv4 only, and a refused connection is retried for ~2 s
+                # before it fails — so the serial attempt spent the whole budget on `::1`
+                # and `/ready` reported a running broker as `timeout` (found in Phase 10).
                 _reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port), timeout=_CONNECT_TIMEOUT_SECONDS
+                    asyncio.open_connection(host, port, happy_eyeballs_delay=0.25),
+                    timeout=_CONNECT_TIMEOUT_SECONDS,
                 )
             except TimeoutError:
                 reasons.append("timeout")
