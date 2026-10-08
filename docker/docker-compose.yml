@@ -3,7 +3,7 @@
 #   docker compose -f docker/docker-compose.yml up -d           # infrastructure only
 #   docker compose -f docker/docker-compose.yml --profile app up  # + the API in a container
 #
-# PostgreSQL, Redis and Kafka, plus (Phase 10) Prometheus on :9090, Grafana on :3000 with
+# PostgreSQL, Redis and Kafka, plus (Phase 10) Prometheus on :9090, Grafana on :3300 with
 # the TradeWatch dashboard as its home page, and kafka-exporter for consumer-group lag.
 #
 # The API and the frontend normally run on the host during development, because the
@@ -157,7 +157,7 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tradewatch.json
     ports:
-      - '127.0.0.1:3000:3000'
+      - '127.0.0.1:3300:3000'
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

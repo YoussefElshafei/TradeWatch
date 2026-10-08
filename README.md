@@ -67,7 +67,7 @@ Open **http://localhost:5173** (not `127.0.0.1` — the refresh cookie is scoped
 host, so a reload there signs you out). Logs are in `backend/.run-logs/`. Each process can
 still be run on its own, e.g. `cd backend && uv run tradewatch-consumer`.
 
-**Observability.** Grafana is at **http://localhost:3000** with the TradeWatch dashboard as
+**Observability.** Grafana is at **http://127.0.0.1:3300** with the TradeWatch dashboard as
 its home page (anonymous read-only, local only); Prometheus is at http://localhost:9090.
 Every process serves its own `/metrics` on a loopback port (9310–9318, listed in
 `backend/src/tradewatch/observability/metrics.py`), and `GET /ready` names each dependency —
