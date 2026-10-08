@@ -1,0 +1,372 @@
+{
+  "benchmark": "api_latency",
+  "description": "Client-side latency per endpoint at fixed concurrency, cache on vs off.",
+  "measured_at": "2026-10-08T18:35:48.306284+00:00",
+  "command": "cd backend && uv run python ../benchmarks/api_latency.py --requests 1000 --concurrency 1,16",
+  "environment": {
+    "commit": "8247e276dd792156deef146ccd8303847146c65c",
+    "working_tree_clean": true,
+    "uncommitted_changes": [],
+    "hardware": {
+      "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+      "physical_cores": 10,
+      "logical_cpus": 16,
+      "memory_gb": 31.7
+    },
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.15",
+    "docker": "29.8.0",
+    "note": "Single developer machine; PostgreSQL, Redis and a one-broker Kafka in Docker Desktop on the same host as the code under test, sharing its CPU and disk."
+  },
+  "workload": {
+    "requests_per_endpoint_per_level": 1000,
+    "concurrency_levels": [
+      1,
+      16
+    ],
+    "warmup_requests_per_endpoint": 200,
+    "data": "4 symbols x 500 1m bars, one trade and quote each",
+    "client": "httpx2 AsyncClient on the same machine, keep-alive connections"
+  },
+  "configuration": {
+    "api_processes": "2 (one cache on, one cache off), measured alternately per endpoint",
+    "uvicorn_workers": 1,
+    "reload": false,
+    "rate_limit": "applies only to /auth routes, none of which are measured",
+    "log_level": "WARNING",
+    "redis_db": 15
+  },
+  "results": {
+    "cache_on": {
+      "concurrency_1": {
+        "GET /health": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 1.786,
+            "p50": 7.193,
+            "p90": 16.248,
+            "p95": 17.78,
+            "p99": 21.929,
+            "max": 381.995,
+            "mean": 8.695
+          },
+          "requests_per_second": 114.9
+        },
+        "GET /api/v1/instruments": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 4.451,
+            "p50": 8.71,
+            "p90": 29.367,
+            "p95": 33.524,
+            "p99": 39.185,
+            "max": 71.761,
+            "mean": 13.698
+          },
+          "requests_per_second": 73.0
+        },
+        "GET /api/v1/market/{symbol}/bars": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 11.768,
+            "p50": 44.011,
+            "p90": 88.234,
+            "p95": 95.289,
+            "p99": 137.245,
+            "max": 484.326,
+            "mean": 49.963
+          },
+          "requests_per_second": 20.0
+        },
+        "GET /api/v1/market/{symbol}/latest": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 5.062,
+            "p50": 16.569,
+            "p90": 31.069,
+            "p95": 33.805,
+            "p99": 38.882,
+            "max": 95.734,
+            "mean": 18.476
+          },
+          "requests_per_second": 54.1
+        },
+        "GET /api/v1/strategies": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 9.977,
+            "p50": 18.034,
+            "p90": 62.379,
+            "p95": 72.35,
+            "p99": 84.956,
+            "max": 114.377,
+            "mean": 27.634
+          },
+          "requests_per_second": 36.2
+        },
+        "GET /api/v1/backtests": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 6.896,
+            "p50": 17.626,
+            "p90": 52.906,
+            "p95": 64.974,
+            "p99": 82.836,
+            "max": 136.995,
+            "mean": 25.5
+          },
+          "requests_per_second": 39.2
+        }
+      },
+      "concurrency_16": {
+        "GET /health": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 39.551,
+            "p50": 94.579,
+            "p90": 157.594,
+            "p95": 181.939,
+            "p99": 209.34,
+            "max": 230.284,
+            "mean": 102.678
+          },
+          "requests_per_second": 154.8
+        },
+        "GET /api/v1/instruments": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 4.932,
+            "p50": 178.227,
+            "p90": 281.621,
+            "p95": 309.877,
+            "p99": 2427.89,
+            "max": 2584.524,
+            "mean": 202.708
+          },
+          "requests_per_second": 78.5
+        },
+        "GET /api/v1/market/{symbol}/bars": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 11.983,
+            "p50": 441.264,
+            "p90": 682.635,
+            "p95": 778.543,
+            "p99": 6353.818,
+            "max": 6969.056,
+            "mean": 551.757
+          },
+          "requests_per_second": 28.9
+        },
+        "GET /api/v1/market/{symbol}/latest": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 48.52,
+            "p50": 97.586,
+            "p90": 145.627,
+            "p95": 222.721,
+            "p99": 1001.38,
+            "max": 3378.616,
+            "mean": 129.974
+          },
+          "requests_per_second": 122.7
+        },
+        "GET /api/v1/strategies": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 31.355,
+            "p50": 117.56,
+            "p90": 271.403,
+            "p95": 1106.506,
+            "p99": 3349.198,
+            "max": 3459.054,
+            "mean": 276.748
+          },
+          "requests_per_second": 52.2
+        },
+        "GET /api/v1/backtests": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 50.539,
+            "p50": 128.935,
+            "p90": 447.744,
+            "p95": 1119.024,
+            "p99": 3304.022,
+            "max": 3536.48,
+            "mean": 288.463
+          },
+          "requests_per_second": 51.3
+        }
+      }
+    },
+    "cache_off": {
+      "concurrency_1": {
+        "GET /health": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 1.747,
+            "p50": 7.461,
+            "p90": 15.229,
+            "p95": 16.919,
+            "p99": 21.548,
+            "max": 380.253,
+            "mean": 8.791
+          },
+          "requests_per_second": 113.7
+        },
+        "GET /api/v1/instruments": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 8.106,
+            "p50": 15.254,
+            "p90": 48.188,
+            "p95": 63.866,
+            "p99": 75.789,
+            "max": 131.551,
+            "mean": 22.671
+          },
+          "requests_per_second": 44.1
+        },
+        "GET /api/v1/market/{symbol}/bars": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 22.53,
+            "p50": 111.807,
+            "p90": 201.946,
+            "p95": 233.123,
+            "p99": 450.277,
+            "max": 2370.612,
+            "mean": 127.647
+          },
+          "requests_per_second": 7.8
+        },
+        "GET /api/v1/market/{symbol}/latest": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 11.848,
+            "p50": 28.789,
+            "p90": 74.983,
+            "p95": 86.984,
+            "p99": 99.869,
+            "max": 124.875,
+            "mean": 37.669
+          },
+          "requests_per_second": 26.5
+        },
+        "GET /api/v1/strategies": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 10.364,
+            "p50": 18.606,
+            "p90": 53.187,
+            "p95": 65.212,
+            "p99": 83.255,
+            "max": 102.589,
+            "mean": 25.951
+          },
+          "requests_per_second": 38.5
+        },
+        "GET /api/v1/backtests": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 9.396,
+            "p50": 24.152,
+            "p90": 66.459,
+            "p95": 76.417,
+            "p99": 90.316,
+            "max": 144.041,
+            "mean": 32.231
+          },
+          "requests_per_second": 31.0
+        }
+      },
+      "concurrency_16": {
+        "GET /health": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 38.385,
+            "p50": 88.886,
+            "p90": 165.229,
+            "p95": 177.147,
+            "p99": 204.675,
+            "max": 248.666,
+            "mean": 100.835
+          },
+          "requests_per_second": 158.0
+        },
+        "GET /api/v1/instruments": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 10.48,
+            "p50": 127.76,
+            "p90": 354.536,
+            "p95": 1824.451,
+            "p99": 7430.937,
+            "max": 7462.344,
+            "mean": 398.662
+          },
+          "requests_per_second": 38.7
+        },
+        "GET /api/v1/market/{symbol}/bars": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 128.523,
+            "p50": 1415.268,
+            "p90": 2462.147,
+            "p95": 4904.587,
+            "p99": 5589.381,
+            "max": 6090.133,
+            "mean": 1688.952
+          },
+          "requests_per_second": 9.4
+        },
+        "GET /api/v1/market/{symbol}/latest": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 87.646,
+            "p50": 176.667,
+            "p90": 462.132,
+            "p95": 977.131,
+            "p99": 3303.64,
+            "max": 3691.246,
+            "mean": 324.119
+          },
+          "requests_per_second": 46.0
+        },
+        "GET /api/v1/strategies": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 7.398,
+            "p50": 107.378,
+            "p90": 322.02,
+            "p95": 1033.4,
+            "p99": 3166.79,
+            "max": 5706.398,
+            "mean": 251.785
+          },
+          "requests_per_second": 63.4
+        },
+        "GET /api/v1/backtests": {
+          "latency_ms": {
+            "count": 1000,
+            "min": 65.596,
+            "p50": 114.03,
+            "p90": 259.136,
+            "p95": 933.181,
+            "p99": 3352.275,
+            "max": 3515.464,
+            "mean": 256.971
+          },
+          "requests_per_second": 59.7
+        }
+      }
+    }
+  },
+  "does_not_prove": [
+    "Concurrency 1 is service time. At higher concurrency throughput barely rises above concurrency 1, so something single-threaded is saturated and most of each latency is queueing. Whether that is the one API worker or the one-process load generator was not separated; both are single Python event loops on one machine.",
+    "The load generator ran on the same machine as the API, PostgreSQL and Redis and competed with them for CPU; a remote client would see network time added and less contention.",
+    "One API process with one worker. It says nothing about horizontal scaling.",
+    "Only the four market endpoints are cached; the authenticated endpoints are listed in both runs as a control and should not differ beyond noise.",
+    "A small, fixed dataset. Bars for one symbol at the default window; latency on a much larger table or a cold OS page cache will differ."
+  ]
+}

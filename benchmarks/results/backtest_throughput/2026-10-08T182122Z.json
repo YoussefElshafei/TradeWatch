@@ -1,0 +1,86 @@
+{
+  "benchmark": "backtest_throughput",
+  "description": "Bars/sec through the pure backtest engine and through the full runner.",
+  "measured_at": "2026-10-08T18:21:22.608767+00:00",
+  "command": "cd backend && uv run python ../benchmarks/backtest_throughput.py --symbols 10 --days 2520 --repeats 5",
+  "environment": {
+    "commit": "8247e276dd792156deef146ccd8303847146c65c",
+    "working_tree_clean": true,
+    "uncommitted_changes": [],
+    "hardware": {
+      "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+      "physical_cores": 10,
+      "logical_cpus": 16,
+      "memory_gb": 31.7
+    },
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.15",
+    "docker": "29.8.0",
+    "note": "Single developer machine; PostgreSQL, Redis and a one-broker Kafka in Docker Desktop on the same host as the code under test, sharing its CPU and disk."
+  },
+  "workload": {
+    "strategy": "sma_crossover",
+    "parameters": {
+      "fast_period": 10,
+      "slow_period": 30
+    },
+    "symbols": 10,
+    "daily_bars_per_symbol": 2520,
+    "price_series": "seeded geometric random walk (drift 0.03%/day, sigma 1.5%)",
+    "repeats": 5
+  },
+  "configuration": {
+    "execution_config": {
+      "slippage_bps": "2",
+      "commission_per_share": "0.005",
+      "commission_pct": "0",
+      "fill_model": "next_bar_open",
+      "allow_partial_fills": false
+    },
+    "initial_cash": 100000
+  },
+  "results": {
+    "engine": {
+      "bars_per_run": 25200,
+      "seconds_per_run": [
+        3.221,
+        2.3805,
+        2.41,
+        2.7281,
+        2.7898
+      ],
+      "bars_per_second_each_run": [
+        7824,
+        10586,
+        10456,
+        9237,
+        9033
+      ],
+      "bars_per_second_median": 9237,
+      "trades_per_run": 470
+    },
+    "runner": {
+      "bars_per_run": 25200,
+      "seconds_per_run": [
+        12.667,
+        12.6272,
+        12.5216,
+        9.2323,
+        9.0827
+      ],
+      "bars_per_second_each_run": [
+        1989,
+        1996,
+        2013,
+        2730,
+        2775
+      ],
+      "bars_per_second_median": 2013
+    }
+  },
+  "does_not_prove": [
+    "One strategy type. RSI reversion and future strategy types do different work per bar and were not measured.",
+    "Engine figures exclude all I/O; runner figures include PostgreSQL on the same machine, so they are a local-dev figure, not a production one.",
+    "Daily bars only \u2014 the runner reads only `1d` bars today."
+  ]
+}

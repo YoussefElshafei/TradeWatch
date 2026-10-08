@@ -1,0 +1,79 @@
+{
+  "benchmark": "e2e_latency",
+  "description": "Provider timestamp to a WebSocket message in a real browser page.",
+  "measured_at": "2026-10-08T17:38:21.471451+00:00",
+  "command": "cd backend && uv run python ../benchmarks/e2e_latency.py --seconds 120",
+  "environment": {
+    "commit": "2df48062f156b7c37f57a08157d5bb69d69cd0be",
+    "working_tree_clean": true,
+    "uncommitted_changes": [],
+    "hardware": {
+      "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+      "physical_cores": 10,
+      "logical_cpus": 16,
+      "memory_gb": 31.7
+    },
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.15",
+    "docker": "29.8.0",
+    "note": "Single developer machine; PostgreSQL, Redis and a one-broker Kafka in Docker Desktop on the same host as the code under test, sharing its CPU and disk."
+  },
+  "workload": {
+    "seconds": 120,
+    "symbols": [
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "SPY"
+    ],
+    "events_received": 15338,
+    "events_by_type": {
+      "market.quote": 7665,
+      "market.trade": 7673
+    },
+    "feed": "synthetic provider at its configured live rate (TW_PROVIDER=synthetic)"
+  },
+  "configuration": {
+    "path": "producer -> Kafka -> broadcaster -> Redis Pub/Sub -> API /ws/market -> Chrome",
+    "browser": "154.0.8037.98",
+    "processes": "one of each, started by scripts/dev.ps1"
+  },
+  "results": {
+    "provider_to_browser_ms": {
+      "count": 15338,
+      "min": 13.05,
+      "p50": 37.03,
+      "p90": 53.39,
+      "p95": 60.13,
+      "p99": 76.82,
+      "max": 150.65,
+      "mean": 37.52
+    },
+    "ingest_to_browser_ms": {
+      "count": 15338,
+      "min": 12.94,
+      "p50": 36.94,
+      "p90": 53.3,
+      "p95": 60.04,
+      "p99": 76.75,
+      "max": 150.55,
+      "mean": 37.42
+    },
+    "provider_to_next_frame_ms": {
+      "count": 15338,
+      "min": 16.83,
+      "p50": 45.32,
+      "p90": 63.61,
+      "p95": 71.06,
+      "p99": 96.2,
+      "max": 864.3,
+      "mean": 48.58
+    }
+  },
+  "does_not_prove": [
+    "Local loopback networking only: no internet, no load balancer, no TLS. Any real deployment adds those hops.",
+    "One browser client. Fan-out cost with many connected clients is not measured.",
+    "The synthetic provider's rate is modest; this is latency at light load, not latency under the ingest benchmark's saturation rate.",
+    "`next_frame` is the earliest paint opportunity, not a measured paint: React's render of the chart is not included."
+  ]
+}

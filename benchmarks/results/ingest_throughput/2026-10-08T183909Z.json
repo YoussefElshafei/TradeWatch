@@ -1,0 +1,55 @@
+{
+  "benchmark": "ingest_throughput",
+  "description": "Trade events/sec from a Kafka backlog to committed PostgreSQL rows.",
+  "measured_at": "2026-10-08T18:39:09.143225+00:00",
+  "command": "cd backend && uv run python ../benchmarks/ingest_throughput.py --events 100000 --symbols 8",
+  "environment": {
+    "commit": "8247e276dd792156deef146ccd8303847146c65c",
+    "working_tree_clean": true,
+    "uncommitted_changes": [],
+    "hardware": {
+      "cpu": "13th Gen Intel(R) Core(TM) i7-13620H",
+      "physical_cores": 10,
+      "logical_cpus": 16,
+      "memory_gb": 31.7
+    },
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.15",
+    "docker": "29.8.0",
+    "note": "Single developer machine; PostgreSQL, Redis and a one-broker Kafka in Docker Desktop on the same host as the code under test, sharing its CPU and disk."
+  },
+  "workload": {
+    "events": 100000,
+    "event_type": "market.trade",
+    "symbols": 8,
+    "mode": "backlog drain: all events published before the consumer starts"
+  },
+  "configuration": {
+    "consumer_batch_size": 100,
+    "topic_partitions": 6,
+    "consumer_instances": 1,
+    "database_pool_size": 10,
+    "log_level": "WARNING (INFO in normal running; the consumer logs per batch at DEBUG)",
+    "kafka": "single broker, KRaft, Docker"
+  },
+  "results": {
+    "events_committed": 100000,
+    "seconds_including_group_join": 142.511,
+    "seconds_first_to_last_row": 133.028,
+    "sustained_events_per_second": 750.2,
+    "events_per_second_including_join": 701.7,
+    "interval_rates_events_per_second": {
+      "min": 0.0,
+      "max": 1455.1
+    },
+    "samples_every_seconds": 0.25,
+    "publish_seconds": 22.582,
+    "publish_events_per_second": 4428.4
+  },
+  "does_not_prove": [
+    "One consumer instance on one machine; it says nothing about how the rate scales with more consumers or partitions.",
+    "Trades only. Quotes and bars take different write paths and were not measured.",
+    "A backlog drain measures capacity, not end-to-end latency under a live feed \u2014 see the e2e_latency benchmark for that.",
+    "PostgreSQL, Kafka and the consumer shared one laptop's CPU and disk; a separate database host would change the figure in either direction."
+  ]
+}
