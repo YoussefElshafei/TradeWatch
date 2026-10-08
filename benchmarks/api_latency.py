@@ -12,7 +12,7 @@ read nor poison the development API's cache entries (same `tw:` keys, different 
 
     cd backend && uv run python ../benchmarks/api_latency.py [--requests 1000 --concurrency 1,16]
 
-Needs the Compose stack's PostgreSQL and Redis, and port 8099 free.
+Needs the Compose stack's PostgreSQL and Redis, and ports 8098-8099 free.
 """
 
 from __future__ import annotations
@@ -42,8 +42,11 @@ from tradewatch.infrastructure.database.session import Database
 from tradewatch.infrastructure.providers.normalization import EventFactory
 from tradewatch.observability.logging import configure_logging
 
-PORT = 8099
-BASE = f"http://127.0.0.1:{PORT}"
+#: Both API processes run at once — cache on and cache off — and every endpoint is measured
+#: on one and then the other, back to back. Run sequentially instead, the two halves were
+#: minutes apart, and on a laptop that was enough for the *uncached control endpoints* to
+#: differ by 2x between runs: drift as large as the effect being measured.
+PORTS = {True: 8099, False: 8098}
 SYMBOLS = ("AAPL", "MSFT", "NVDA", "SPY")
 BARS_PER_SYMBOL = 500
 REDIS_DB = 15
@@ -103,11 +106,12 @@ async def _seed(url: str) -> None:
 
 
 def _start_api(url: str, cache: bool) -> subprocess.Popen[bytes]:
+    port = PORTS[cache]
     redis = os.environ["TW_REDIS_URL"].rsplit("/", 1)[0] + f"/{REDIS_DB}"
     env = os.environ | {
         "TW_DATABASE_URL": url,
         "TW_REDIS_URL": redis,
-        "TW_API_PORT": str(PORT),
+        "TW_API_PORT": str(port),
         "TW_API_HOST": "127.0.0.1",
         "TW_CACHE_ENABLED": str(cache).lower(),
         "TW_ENV": "ci",  # no reloader: one serving process, like a deployment
@@ -170,25 +174,39 @@ async def _load(
     return {"latency_ms": summary, "requests_per_second": round(requests / elapsed, 1)}
 
 
-async def _measure(url: str, cache: bool, requests: int, levels: list[int]) -> dict:  # type: ignore[type-arg]
-    process = _start_api(url, cache)
+async def _measure_both(url: str, requests: int, levels: list[int]) -> dict:  # type: ignore[type-arg]
+    processes = [_start_api(url, cache) for cache in PORTS]
     top = max(levels)
     limits = httpx.Limits(max_connections=top, max_keepalive_connections=top)
+    clients = {
+        cache: httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", limits=limits, timeout=60)
+        for cache, port in PORTS.items()
+    }
     try:
-        async with httpx.AsyncClient(base_url=BASE, limits=limits, timeout=60) as client:
+        for client in clients.values():
             await _wait_healthy(client)
-            auth = {"Authorization": f"Bearer {await _token(client)}"}
-            results: dict[str, dict] = {}  # type: ignore[type-arg]
-            for concurrency in levels:
-                level = results.setdefault(f"concurrency_{concurrency}", {})
-                for name, path in PUBLIC.items():
-                    level[name] = await _load(client, path, {}, requests, concurrency)
-                for name, path in AUTHENTICATED.items():
-                    level[name] = await _load(client, path, auth, requests, concurrency)
-            return results
+        # One user in the shared database; each API issues its own token for it.
+        auth = {
+            cache: {"Authorization": f"Bearer {await _token(c)}"} for cache, c in clients.items()
+        }
+        results: dict[str, dict] = {"cache_on": {}, "cache_off": {}}  # type: ignore[type-arg]
+        endpoints = [(name, path, False) for name, path in PUBLIC.items()]
+        endpoints += [(name, path, True) for name, path in AUTHENTICATED.items()]
+        for concurrency in levels:
+            level = f"concurrency_{concurrency}"
+            for name, path, needs_auth in endpoints:
+                for cache, label in ((True, "cache_on"), (False, "cache_off")):
+                    headers = auth[cache] if needs_auth else {}
+                    results[label].setdefault(level, {})[name] = await _load(
+                        clients[cache], path, headers, requests, concurrency
+                    )
+        return results
     finally:
-        process.terminate()
-        process.wait(timeout=30)
+        for client in clients.values():
+            await client.aclose()
+        for process in processes:
+            process.terminate()
+            process.wait(timeout=30)
 
 
 async def main(requests: int, levels: list[int]) -> None:
@@ -196,8 +214,7 @@ async def main(requests: int, levels: list[int]) -> None:
     configure_logging(level="WARNING")
     async with bench_database(os.environ["TW_DATABASE_URL"]) as url:
         await _seed(url)
-        cached = await _measure(url, True, requests, levels)
-        uncached = await _measure(url, False, requests, levels)
+        measured = await _measure_both(url, requests, levels)
 
     write_result(
         "api_latency",
@@ -214,14 +231,14 @@ async def main(requests: int, levels: list[int]) -> None:
             "client": "httpx2 AsyncClient on the same machine, keep-alive connections",
         },
         configuration={
-            "api_processes": 1,
+            "api_processes": "2 (one cache on, one cache off), measured alternately per endpoint",
             "uvicorn_workers": 1,
             "reload": False,
             "rate_limit": "applies only to /auth routes, none of which are measured",
             "log_level": "WARNING",
             "redis_db": REDIS_DB,
         },
-        results={"cache_on": cached, "cache_off": uncached},
+        results=measured,
         caveats=[
             "Concurrency 1 is service time. At higher concurrency throughput barely rises "
             "above concurrency 1, so something single-threaded is saturated and most of each "

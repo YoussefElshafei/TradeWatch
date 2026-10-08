@@ -23,8 +23,10 @@ first use and reuses it after — the one row it leaves behind.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,9 +35,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx2 as httpx
 from _common import percentiles, write_result
+from aiokafka import AIOKafkaConsumer
+from aiokafka.admin import AIOKafkaAdminClient
+
+from tradewatch.config.env import load_env_file
 
 HERE = Path(__file__).resolve().parent
 SYMBOLS = "AAPL,MSFT,NVDA,SPY"
+BROADCASTER_GROUP = "broadcaster"
+MAX_BROADCASTER_LAG = 1_000
 ACCOUNT = {"email": "e2e-benchmark@example.com", "password": "e2e-benchmark-password"}
 
 
@@ -55,7 +63,38 @@ def _token(api: str) -> str:
         return token
 
 
+def _broadcaster_lag(bootstrap: str) -> int:
+    """Messages the broadcaster's group has not yet relayed.
+
+    Checked first because the broadcaster resumes from its committed offset: after any
+    downtime it replays the backlog, and this benchmark would then report the backlog's age
+    as "latency". See PERFORMANCE.md's findings for how to reset the group.
+    """
+
+    async def lag() -> int:
+        admin = AIOKafkaAdminClient(bootstrap_servers=bootstrap)
+        reader = AIOKafkaConsumer(bootstrap_servers=bootstrap)
+        await admin.start()
+        await reader.start()
+        try:
+            committed = await admin.list_consumer_group_offsets(BROADCASTER_GROUP)
+            ends = await reader.end_offsets(list(committed))
+            return sum(max(ends[tp] - meta.offset, 0) for tp, meta in committed.items())
+        finally:
+            await reader.stop()
+            await admin.close()
+
+    return asyncio.run(lag())
+
+
 def main(api: str, seconds: int) -> None:
+    load_env_file()
+    behind = _broadcaster_lag(os.environ.get("TW_KAFKA_BOOTSTRAP", "localhost:9092"))
+    if behind > MAX_BROADCASTER_LAG:
+        raise SystemExit(
+            f"the broadcaster is {behind} messages behind; latency now would measure the "
+            "backlog's age. Let it drain, or reset the group (PERFORMANCE.md, findings)."
+        )
     token = _token(api)
     ws = api.replace("http", "ws", 1) + f"/ws/market?token={token}&symbols={SYMBOLS}"
     completed = subprocess.run(  # noqa: S603 - our own script

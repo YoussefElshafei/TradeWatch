@@ -109,6 +109,9 @@ def environment() -> dict[str, Any]:
     return {
         "commit": _run("git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"),
         "working_tree_clean": dirty in ("", "unavailable"),
+        # Which tracked files differed from the commit, so a reader can see whether any of
+        # them is code under test rather than taking "not clean" on trust either way.
+        "uncommitted_changes": [] if dirty in ("", "unavailable") else dirty.splitlines(),
         "hardware": hardware,
         "os": platform.platform(),
         "python": platform.python_version(),
