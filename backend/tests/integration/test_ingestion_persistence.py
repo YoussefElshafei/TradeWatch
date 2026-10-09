@@ -123,6 +123,30 @@ class TestIngestedEventsPersist:
             assert row.occurred_at.tzinfo is not None
             assert row.provider == "synthetic"
 
+    async def test_a_new_producer_run_is_stored_not_discarded(
+        self, session: AsyncSession, instrument: Instrument
+    ) -> None:
+        """Phase 10's bug, against the real database: a restarted producer (a new provider
+        instance) restarted its trade sequence, collided with every stored event id, and the
+        insert discarded its trades as duplicates. Now its prints are new prints."""
+        repository = TradeRepository(session)
+
+        async def ingest(run_id: str) -> list[MarketEvent]:
+            provider = SyntheticProvider([instrument.symbol], seed=21, run_id=run_id)
+            publisher = RecordingPublisher()
+            await IngestionService(provider, publisher).run_stream(
+                [instrument.symbol], max_events=20
+            )
+            return publisher.events
+
+        first = await ingest("run-1")
+        await repository.bulk_insert([to_new_trade(e, instrument.id) for e in first])  # type: ignore[arg-type]
+        written = await repository.bulk_insert(
+            [to_new_trade(e, instrument.id) for e in await ingest("run-2")]  # type: ignore[arg-type]
+        )
+
+        assert written == 20, "the second run's trades were discarded as duplicates"
+
     async def test_a_replayed_stream_produces_no_duplicate_rows(
         self, session: AsyncSession, instrument: Instrument
     ) -> None:
@@ -130,11 +154,16 @@ class TestIngestedEventsPersist:
 
         Deterministic event ids (ADR-0012) are what make this work. With random ids the
         second pass would insert twenty more rows and the tape would be wrong.
+
+        A reconnect is the *same* provider rewinding (`reset()`), not a new one: since Phase
+        10 a new provider instance is a new producer run with its own trade ids, so that its
+        prints are never mistaken for an earlier run's (see the next test).
         """
         repository = TradeRepository(session)
+        provider = SyntheticProvider([instrument.symbol], seed=21)
 
         async def ingest() -> list[MarketEvent]:
-            provider = SyntheticProvider([instrument.symbol], seed=21)
+            provider.reset()
             publisher = RecordingPublisher()
             await IngestionService(provider, publisher).run_stream(
                 [instrument.symbol], max_events=20
