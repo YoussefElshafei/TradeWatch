@@ -144,7 +144,7 @@ recorded so the decision can be made with the number in hand. Counts quoted in t
 were read off the running system (Prometheus, `kafka-consumer-groups.sh`, the database) while
 investigating; they describe what was observed, and are not performance figures.
 
-**Correctness problems the instrumentation exposed** (pre-existing, not performance):
+**Correctness problems the instrumentation exposed** (pre-existing, not performance). Items 1–3 were fixed after this phase — see `docs/PROJECT_STATE.md` §18; item 4 is an accepted limitation:
 
 1. **No process publishes live bars.** `tw.market.bars.1m.v1` receives nothing in the running
    stack: the producer publishes trades and quotes only, the aggregator writes bars straight
@@ -161,7 +161,7 @@ investigating; they describe what was observed, and are not performance figures.
 3. **The broadcaster replays its backlog as live data.** It resumes from its committed
    offset, so after downtime browsers receive hours-old ticks presented as live: 2,093,299
    messages behind before the group was reset to latest for these measurements.
-   A live relay probably wants to start from the newest offset.
+   *Fixed:* the broadcaster now skips to the newest offset when events are older than 30 s.
 4. **A broker outage leaves a gap in the tape.** The producer stalls rather than drops,
    but the synthetic feed generates nothing while it is stalled and nothing catches up
    afterwards (recovery benchmark, above).

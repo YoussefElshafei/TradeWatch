@@ -31,13 +31,13 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
 from tradewatch.application.ports.broadcaster import EventBroadcaster
 from tradewatch.application.ports.cache import Cache
-from tradewatch.application.ports.event_bus import EventBatchConsumer
+from tradewatch.application.ports.event_bus import EventBatchConsumer, SkipsToLatest
 from tradewatch.domain.enums import BarInterval
 from tradewatch.domain.events import AlertEvent, BarEvent, MarketEvent, QuoteEvent, TradeEvent
 from tradewatch.observability.logging import get_logger
@@ -94,6 +94,8 @@ class BroadcastStats:
     events: int = 0
     published: int = 0
     invalidations: int = 0
+    #: Events not relayed because they were older than `max_staleness` (a backlog).
+    stale_skipped: int = 0
     started_at: dt.datetime | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -102,6 +104,7 @@ class BroadcastStats:
             "events": self.events,
             "published": self.published,
             "invalidations": self.invalidations,
+            "stale_skipped": self.stale_skipped,
         }
 
 
@@ -117,6 +120,7 @@ class MarketBroadcastService:
         channel: str = BROADCAST_CHANNEL,
         alerts_channel: str | None = None,
         clock: Callable[[], dt.datetime] | None = None,
+        max_staleness: dt.timedelta | None = None,
     ) -> None:
         self._consumer = consumer
         self._broadcaster = broadcaster
@@ -126,6 +130,8 @@ class MarketBroadcastService:
         #: worker that never sees an `AlertEvent` has no reason to name a second channel.
         self._alerts_channel = alerts_channel
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
+        #: None relays everything, however old — tests that are about relaying, not age.
+        self._max_staleness = max_staleness
         self._stats = BroadcastStats()
 
     @property
@@ -149,6 +155,9 @@ class MarketBroadcastService:
                 if not batch:
                     continue
 
+                if await self._skipped_stale(batch):
+                    continue
+
                 for event in batch:
                     await self._broadcast_one(event)
 
@@ -165,6 +174,36 @@ class MarketBroadcastService:
             log.info("broadcaster.stopped", **self._stats.as_dict())
 
         return self._stats
+
+    async def _skipped_stale(self, batch: Sequence[MarketEvent]) -> bool:
+        """Drop a batch that is history rather than news, and stop reading history.
+
+        This service is live fan-out: a browser shown a two-hour-old tick as the current
+        price is worse off than one shown nothing. So a batch holding anything older than
+        `max_staleness` is not relayed, and the consumer jumps to the newest offset — one
+        seek instead of reading (and dropping) a backlog that can run to millions. Returns
+        whether the batch was skipped.
+        """
+        if self._max_staleness is None:
+            return False
+        now = self._clock()
+        oldest = min(event.ingested_at for event in batch)
+        behind = now - oldest
+        if behind <= self._max_staleness:
+            return False
+        if isinstance(self._consumer, SkipsToLatest):
+            await self._consumer.skip_to_latest()
+        # Without the seek (an in-memory bus) the stale batch is still not relayed; the
+        # next batches are judged on their own age.
+        await self._consumer.commit()
+        self._stats.stale_skipped += len(batch)
+        log.warning(
+            "broadcaster.skipped_stale_backlog",
+            behind_seconds=round(behind.total_seconds(), 1),
+            max_staleness_seconds=self._max_staleness.total_seconds(),
+            dropped_in_batch=len(batch),
+        )
+        return True
 
     async def _broadcast_one(self, event: MarketEvent) -> None:
         channel = self._channel

@@ -358,6 +358,7 @@ class FakeConsumerClient:
         self.started = False
         self.stopped = False
         self.consumed = 0
+        self.seeks = 0
         self.commits: list[int] = []
         self.poll_count = 0
 
@@ -391,6 +392,11 @@ class FakeConsumerClient:
         if self.commit_error is not None:
             raise self.commit_error
         self.commits.append(self.consumed)
+
+    async def seek_to_end(self) -> None:
+        """Abandon every poll still scripted: that is what "jump to the log end" looks like."""
+        self.seeks += 1
+        self.polls.clear()
 
 
 @dataclass(slots=True)

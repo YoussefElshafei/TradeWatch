@@ -39,7 +39,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from tradewatch.application.aggregation.service import BarAggregator
-from tradewatch.application.ports.event_bus import PositionedBatchConsumer, StreamPosition
+from tradewatch.application.ports.event_bus import (
+    EventPublisher,
+    PositionedBatchConsumer,
+    StreamPosition,
+)
 from tradewatch.application.processing.errors import StorageError, UnprocessableEventError
 from tradewatch.domain.events import MarketEvent, TradeEvent
 from tradewatch.observability.logging import get_logger
@@ -71,6 +75,11 @@ class AggregationConsumerStats:
     empty_polls: int = 0
     commits: int = 0
     rejected_bars: int = 0
+    #: Closed (and corrected) 1m bars published to `tw.market.bars.1m.v1`.
+    bars_published: int = 0
+    #: Bars that were stored but whose publish failed. Live consumers missed them; the
+    #: database still has them.
+    bar_publish_failures: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +90,8 @@ class AggregationConsumerStats:
             "empty_polls": self.empty_polls,
             "commits": self.commits,
             "rejected_bars": self.rejected_bars,
+            "bars_published": self.bars_published,
+            "bar_publish_failures": self.bar_publish_failures,
         }
 
 
@@ -94,9 +105,15 @@ class BarAggregationService:
         *,
         consumer_group: str,
         clock: Callable[[], dt.datetime] | None = None,
+        publisher: EventPublisher | None = None,
     ) -> None:
         self._consumer = consumer
         self._aggregator = aggregator
+        #: Where closed bars go (`ARCHITECTURE.md` §7.2: the aggregator emits
+        #: `tw.market.bars.1m.v1`). None only in tests that care about storage alone. Until
+        #: Phase 10 found it, nothing published live bars at all, so paper trading and the
+        #: anomaly detector — both consumers of that topic — had no input.
+        self._publisher = publisher
         self._group = consumer_group
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
         #: stream -> the highest offset already folded into a stored bar. Loaded once at
@@ -239,9 +256,37 @@ class BarAggregationService:
             # Only now is it safe to acknowledge these events to the broker.
             self._applied.update(self._pending)
             self._pending.clear()
+            await self._publish_closed_bars()
 
         await self._consumer.commit()
         self._stats.commits += 1
+
+    async def _publish_closed_bars(self) -> None:
+        """Publish bars that closed in the flush just made durable.
+
+        After the write, so nothing downstream acts on a bar the database lacks; before the
+        offset commit, so a broker that is down fails the commit too and the batch is retried.
+        ponytail: a publish that fails while the commit then succeeds is not retried — the
+        trades are already recorded as applied, so redelivery rebuilds no bar to republish.
+        The bar is in PostgreSQL; only its live event is lost. A per-bar "published" mark in
+        the progress table is the upgrade if live consumers ever need every bar.
+        """
+        events = self._aggregator.take_closed_events()
+        if self._publisher is None or not events:
+            return
+        try:
+            accepted = await self._publisher.publish_many(events)
+        except Exception as error:
+            self._stats.bar_publish_failures += len(events)
+            log.error(
+                "aggregation.bar_publish_failed",
+                bars=len(events),
+                error=str(error),
+                error_type=type(error).__name__,
+            )
+            return
+        self._stats.bars_published += accepted
+        self._stats.bar_publish_failures += len(events) - accepted
 
     async def close(self) -> None:
         """Close every open bar and write it, with the position that accounts for it.

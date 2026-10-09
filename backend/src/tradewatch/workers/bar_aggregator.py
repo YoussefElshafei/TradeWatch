@@ -38,6 +38,7 @@ from tradewatch.infrastructure.database.bar_store import SqlBarStore
 from tradewatch.infrastructure.database.session import Database
 from tradewatch.infrastructure.events.kafka import (
     KafkaEventConsumer,
+    KafkaEventPublisher,
     Topics,
     ensure_topics,
     open_dead_letter_sink,
@@ -97,14 +98,21 @@ async def run_aggregator(
         # Trades only. Quotes and bars are on the same broker and are none of its business.
         subscribe_to=(topics.trades,),
     )
+    # Closed 1m bars go to `tw.market.bars.1m.v1` — the topic paper trading and the anomaly
+    # detector read. Its own client id, so broker-side metrics tell it apart from the DLQ.
+    publisher = KafkaEventPublisher(
+        settings.kafka, topics=topics, client_id="tradewatch-aggregator-bars"
+    )
     service = BarAggregationService(
         consumer,
         aggregator,
         # The same group name Kafka commits offsets under, so the progress rows and the
         # committed offsets describe one consumer rather than two.
         consumer_group=settings.kafka.kafka_aggregator_group,
+        publisher=publisher,
     )
 
+    await publisher.start()
     await consumer.start()
     log.info(
         "aggregator.starting",
@@ -129,6 +137,8 @@ async def run_aggregator(
                 await rollup_task
         await service.close()
         await consumer.stop()
+        with contextlib.suppress(Exception):
+            await publisher.stop()
         if dlq_producer is not None:
             with contextlib.suppress(Exception):
                 await dlq_producer.stop()

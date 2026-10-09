@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import random
+import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -125,6 +126,7 @@ class SyntheticProvider:
         interval_seconds: float = 0.0,
         scenario: SyntheticScenario | None = None,
         factory: EventFactory | None = None,
+        run_id: str | None = None,
     ) -> None:
         if not symbols:
             raise ValueError("SyntheticProvider needs at least one symbol")
@@ -136,6 +138,13 @@ class SyntheticProvider:
         self._interval_seconds = interval_seconds
         self._scenario = scenario or SyntheticScenario()
         self._factory = factory or EventFactory(source=PROVIDER_NAME, producer="synthetic-provider")
+        #: Part of every trade id, fixed for this instance's lifetime. `reset()` (a reconnect)
+        #: keeps it, so a replay inside one run still deduplicates; a new process gets a new
+        #: one, so its prints are new prints. Without it the sequence restarted at zero every
+        #: run, every trade after the first run collided with a stored event id (ADR-0012),
+        #: and the persistence consumer discarded them all as duplicates — found in Phase 10.
+        #: Construction time in milliseconds: two runs of one producer cannot share it.
+        self._run_id = run_id or format(int(time.time() * 1000), "x")
         self._closed = False
         self._states: dict[str, _SymbolState] = {}
         self._reset_states()
@@ -424,9 +433,9 @@ class SyntheticProvider:
                     price=price,
                     size=size,
                     occurred_at=occurred_at,
-                    # A stable per-symbol sequence, so a replay of the same stream
-                    # deduplicates instead of looking like new prints.
-                    provider_trade_id=f"{symbol}-{state.sequence}",
+                    # A per-symbol sequence within this run: a replay of the same stream
+                    # (a reconnect) deduplicates; a later run is distinguished by run_id.
+                    provider_trade_id=f"{symbol}-{self._run_id}-{state.sequence}",
                 )
             else:
                 spread = self._spread(price)

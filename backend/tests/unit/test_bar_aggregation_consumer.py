@@ -30,7 +30,7 @@ from tradewatch.application.aggregation import BarAggregationService, BarAggrega
 from tradewatch.application.ports.event_bus import StreamPosition
 from tradewatch.application.processing.errors import StorageError, UnprocessableEventError
 from tradewatch.domain.entities import NewBar
-from tradewatch.domain.events import MarketEvent
+from tradewatch.domain.events import BarEvent, EventType, MarketEvent
 
 pytestmark = pytest.mark.unit
 
@@ -477,3 +477,75 @@ class TestShutdownIsIdempotentToo:
         assert bar.volume == Decimal("10"), "one trade, counted once"
         assert bar.trade_count == 1
         assert restarted.stats.already_applied == 1
+
+
+class RecordingPublisher:
+    """An `EventPublisher` that records what it was given into the shared activity log."""
+
+    def __init__(self, log: list[str], *, fail: bool = False) -> None:
+        self.log = log
+        self.fail = fail
+        self.events: list[MarketEvent] = []
+
+    async def publish(self, event: MarketEvent) -> None:
+        await self.publish_many([event])
+
+    async def publish_many(self, events: Sequence[MarketEvent]) -> int:
+        if self.fail:
+            raise ConnectionError("broker down")
+        self.events.extend(events)
+        self.log.append(f"publish:{len(events)}")
+        return len(events)
+
+    async def flush(self) -> None:
+        return None
+
+
+def build_publishing(
+    script: Sequence[Sequence[MarketEvent]], *, fail: bool = False
+) -> tuple[BarAggregationService, RecordingPublisher, list[str]]:
+    log: list[str] = []
+    store = RecordingStore(log)
+    consumer = ScriptedConsumer(script, log)
+    aggregator = BarAggregator(store, lateness=dt.timedelta(seconds=5))
+    publisher = RecordingPublisher(log, fail=fail)
+    service = BarAggregationService(consumer, aggregator, consumer_group=GROUP, publisher=publisher)
+    return service, publisher, log
+
+
+class TestPublishingClosedBars:
+    """Phase 10 found that nothing published live bars, so their consumers had no input."""
+
+    async def test_a_closed_bar_is_published_after_the_write_and_before_the_commit(self) -> None:
+        first, second = trade(seconds=10, price="100"), trade(seconds=70, price="101")
+        service, publisher, log = build_publishing([[first, second]])
+
+        await service.run(max_batches=1)
+
+        assert log == ["write:2", "publish:1", "commit"]
+        (bar,) = publisher.events
+        assert isinstance(bar, BarEvent)
+        assert bar.event_type is EventType.BAR_CLOSED
+        assert bar.bar_start == first.occurred_at.replace(second=0, microsecond=0)
+        assert (bar.open, bar.close, bar.volume) == (Decimal("100"), Decimal("100"), Decimal("10"))
+        # A derived event: the source and correlation id of the trades it was built from.
+        assert bar.source == first.source
+        assert bar.correlation_id == first.correlation_id
+
+    async def test_an_open_bar_is_stored_but_not_published(self) -> None:
+        service, publisher, log = build_publishing([[trade(seconds=10, price="100")]])
+
+        await service.run(max_batches=1)
+
+        assert publisher.events == []
+        assert log == ["write:1", "commit"]
+
+    async def test_a_failed_publish_does_not_stop_the_stored_bar_being_committed(self) -> None:
+        service, _, log = build_publishing(
+            [[trade(seconds=10, price="100"), trade(seconds=70, price="101")]], fail=True
+        )
+
+        await service.run(max_batches=1)
+
+        assert log == ["write:2", "commit"]
+        assert service.stats.bar_publish_failures == 1
