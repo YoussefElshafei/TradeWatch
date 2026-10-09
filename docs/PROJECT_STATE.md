@@ -1096,16 +1096,23 @@ job) before trusting a result, not just whether the endpoint returns one.
 
 **Architectural:**
 
-- **Nothing publishes live 1m bars to Kafka** (found in Phase 10). The producer publishes
-  trades and quotes; the aggregator writes bars to PostgreSQL only; the backfill writes nothing
-  to Kafka. Live paper trading and the anomaly detector therefore receive no input in the
-  running stack. The aggregator publishing its closed 1m bars is the likely fix.
-- **Synthetic trade ids collide across producer runs** (found in Phase 10). `{symbol}-{sequence}`
-  with the sequence restarting at zero means every run after the first re-emits stored ids, and
-  the idempotent insert drops them. The dashboard's watchlist price (from the trades table)
-  goes stale while the live Market page does not.
-- **The broadcaster resumes from its committed offset**, so after downtime it relays a backlog
-  as if it were live. For a live relay, starting from the newest offset is probably right.
+- **Fixed after Phase 10 — three of its findings.** They had separate root causes, not one:
+  - *No live bars.* No code published `tw.market.bars.1m.v1`. The aggregator now publishes
+    each 1m bar when it closes (and again if corrected), after the database write and before
+    the offset commit, carrying its trades' source and correlation id. Verified live: 16 bars
+    in 5 minutes for 4 symbols, all consumed by the anomaly detector (median 20 ms) and paper
+    trading. **Remaining ceiling:** a publish that fails while the following commit succeeds
+    is not retried — the bar is stored, only its live event is lost (marked `ponytail:`).
+  - *New trades discarded.* Synthetic trade ids were `{symbol}-{sequence}` with the sequence
+    restarting every run, so a new run's event ids (ADR-0012) collided with stored ones and the
+    database insert — not ingestion, whose deduplicator is per-process memory — dropped them.
+    Ids are now `{symbol}-{run_id}-{sequence}`, `run_id` fixed per provider instance: a
+    reconnect (`reset()`) still replays identical ids, a new run never reuses old ones.
+    Verified live: three producer runs, all stored under distinct run ids.
+  - *Broadcaster replaying history.* It now drops any batch older than
+    `TW_BROADCAST_MAX_STALENESS_SECONDS` (30 s) and seeks every partition to the log end
+    (`SkipsToLatest`, a port only a live-relay consumer implements). Verified live: woke 93 s
+    behind, one seek, nothing stale relayed.
 - **Accepted limitation — a broker outage leaves a permanent gap in the tape** (decided after
   Phase 10; not to be fixed). The producer stalls on the broker (one failed
   publish in a 60 s outage, not thousands), the synthetic feed generates nothing meanwhile,
@@ -1278,15 +1285,10 @@ From `CLAUDE.md` and the repository's own standards:
 
 ## 21. Recommended next step
 
-**Before Phase 11, fix the two pipeline correctness gaps Phase 10 found** (§18): publish live
-1m bars to `tw.market.bars.1m.v1` (without them, live paper trading and anomaly detection do
-nothing), and make synthetic trade ids unique across producer runs (without that, new trades
-are silently discarded). Both are small, both have a metric that will show the fix working
-(`tradewatch_events_published_total{event_type="market.bar.closed"}`, and the trades table's
-newest `recorded_at`), and Phase 11's end-to-end tests would otherwise be written against a
-pipeline that silently drops data.
+The pipeline correctness gaps Phase 10 found are closed (§18), so Phase 11's end-to-end tests
+run against a pipeline that no longer silently drops data.
 
-**Then Phase 11 — end-to-end and failure-recovery hardening.** `playwright-core` is already a
+**Phase 11 — end-to-end and failure-recovery hardening.** `playwright-core` is already a
 frontend dev dependency (the end-to-end latency benchmark drives Chrome with it), the
 recovery benchmark is the start of a failure-injection harness, and the Grafana dashboard is
 how a chaos run will be read.

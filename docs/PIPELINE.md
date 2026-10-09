@@ -512,11 +512,10 @@ few lines of test code rather than an unpluggable network cable.
 
 ## Known limitations
 
-- **Nothing publishes live bars to `tw.market.bars.1m.v1`.** The aggregator writes bars
-  straight to PostgreSQL, and the backfill writes nothing to Kafka at all (an earlier version
-  of this note said otherwise; Phase 10 checked). The original reasoning — no consumer yet —
-  stopped holding when Phases 7 and 8 added two: live paper trading and the anomaly detector
-  get no input in the running stack. See `docs/PROJECT_STATE.md` §18.
+- **Only the aggregator publishes bars.** It publishes each 1m bar to
+  `tw.market.bars.1m.v1` when the bar closes (fixed after Phase 10 found that nothing did);
+  the backfill writes history straight to PostgreSQL and publishes nothing — a bar from three
+  weeks ago is not a live event. 5m/1h/1d rollups are never published.
 - **No WebSocket to the browser.** The chart fetches once; it does not update live. Phase 4.
 - **The DLQ has no redrive.** Quarantined messages are diagnosable and not replayable without
   manual work. Deliberate — see above.
